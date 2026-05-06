@@ -25,7 +25,14 @@ command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 # install the repo dependencies
 uv sync --extra gpu
 # activate venv so that `python` uses the project's venv instead of system python
-source .venv/bin/activate
+if [ -f ".venv/Scripts/activate" ]; then
+    source .venv/Scripts/activate
+elif [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+else
+    echo "error: no activation script found in .venv"
+    exit 1
+fi
 
 # -----------------------------------------------------------------------------
 # wandb setup

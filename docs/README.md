@@ -34,7 +34,10 @@ nanochat uses [uv](https://docs.astral.sh/uv/) for dependency management. To ins
 ```bash
 uv sync --extra gpu    # Use for CUDA (A100/H100/etc.)
 uv sync --extra cpu    # (or) Use for CPU-only / MPS
-source .venv/bin/activate
+# Windows Git Bash:
+source .venv/Scripts/activate
+# Linux / macOS:
+# source .venv/bin/activate
 ```
 
 For development (adds pytest, matplotlib, ipykernel, transformers, etc.):
@@ -51,7 +54,7 @@ The most fun you can have is to train your own GPT-2 and talk to it. The entire 
 bash runs/speedrun.sh
 ```
 
-You may wish to do so in a screen session as this will take ~3 hours to run. Once it's done, you can talk to it via the ChatGPT-like web UI. Make sure again that your local uv virtual environment is active (run `source .venv/bin/activate`), and serve it:
+You may wish to do so in a screen session as this will take ~3 hours to run. Once it's done, you can talk to it via the ChatGPT-like web UI. Make sure again that your local uv virtual environment is active (on Windows Git Bash run `source .venv/Scripts/activate`, on Linux/macOS run `source .venv/bin/activate`), and serve it:
 
 ```bash
 python -m scripts.chat_web

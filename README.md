@@ -92,7 +92,10 @@ uv sync --extra cpu        # 没有 NVIDIA GPU 选 cpu
 # uv sync --extra gpu      # 有 CUDA GPU 选 gpu (会装 CUDA 12.8 版 PyTorch)
 
 # 3. 激活虚拟环境
-source .venv/bin/activate
+# Windows Git Bash:
+source .venv/Scripts/activate
+# Linux / macOS:
+# source .venv/bin/activate
 ```
 
 > 中间产物 (数据、tokenizer、checkpoint) 默认放在 `~/.cache/nanochat/`

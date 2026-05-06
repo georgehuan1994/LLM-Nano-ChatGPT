@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 # 展示一个在 CPU（或 MacBook 上的 MPS）上运行的示例，用来体验项目中的部分代码流程
 # 此脚本最后一次更新/调优时间：2026 年 1 月 17 日
 
@@ -11,16 +13,31 @@
 # 你也可以手动运行此脚本：把下面的命令一条一条复制到终端中执行
 
 # 设置 NANOCHAT_BASE_DIR 环境变量，指定 nanochat 的数据、tokenizer、checkpoint 等文件的存储位置
-# $HOME 是当前用户的家目录；最终目录通常类似 ~/.cache/nanochat
-export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+# 这里改为放到当前项目目录下的 .nanochat 子目录，便于统一查看、备份和删除
+export NANOCHAT_BASE_DIR="$PWD/.nanochat"
 
-# 创建上面的缓存目录
+# 创建上面的项目内输出目录
 mkdir -p $NANOCHAT_BASE_DIR
+
+# 目录示例：
+# - 预训练数据：$NANOCHAT_BASE_DIR/base_data_climbmix
+# - tokenizer 文件：通常也会放在这个基础目录下
+# - checkpoint / 中间产物：通常也会放在这个基础目录下
 
 # 检查系统里是否已经安装 uv
 # command -v uv：查找 uv 命令是否存在
 # curl -LsSf https://astral.sh/uv/install.sh | sh：下载 uv 的安装脚本并执行
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 如果是刚安装的 uv，当前 shell 可能还没有加载 ~/.local/bin 到 PATH
+# 这里主动加载一次，确保后续 uv venv / uv sync 在同一个会话里可用
+[ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
+
+# 如果到这里仍然找不到 uv，就直接报错退出，避免后续命令连续失败
+command -v uv &> /dev/null || {
+    echo "error: uv is not available in PATH. Try: source \"$HOME/.local/bin/env\""
+    exit 1
+}
 
 # 如果当前目录下还没有 .venv，就用 uv 创建一个 Python 虚拟环境
 # .venv 是隔离的 Python 环境，避免依赖污染系统 Python
@@ -31,7 +48,15 @@ command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --extra cpu
 
 # 激活虚拟环境，让后续 python 命令使用 .venv 里的 Python 和依赖
-source .venv/bin/activate
+# Windows 上的 uv/venv 通常会生成 .venv/Scripts/activate；类 Unix 环境通常是 .venv/bin/activate
+if [ -f ".venv/Scripts/activate" ]; then
+    source .venv/Scripts/activate
+elif [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+else
+    echo "error: no activation script found in .venv"
+    exit 1
+fi
 
 # 如果用户没有提前设置 WANDB_RUN，就默认设为 dummy
 # WANDB 是 Weights & Biases，用于记录训练日志；dummy 通常表示不真正上传日志
