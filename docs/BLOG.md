@@ -1,0 +1,1 @@
+GPT 指的是：生成式预训练变换器 (Generative Pre-trained Transformer，GPT)
