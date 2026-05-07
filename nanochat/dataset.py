@@ -25,7 +25,7 @@ from nanochat.common import get_base_dir
 # -----------------------------------------------------------------------------
 # 当前预训练数据集的基本配置
 
-# 远程数据集的基础下载地址，实际下载某个 shard 时，会在这个地址后面拼接具体文件名。
+# 远程数据集的基础下载地址，实际下载某个 shard 时，会在这个地址后面拼接具体文件名
 BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 
 # 最后一个 shard 的编号，对应 shard_06542.parquet
@@ -91,7 +91,7 @@ def list_parquet_files(data_dir=None, warn_on_legacy=False) -> list[str]:
 
 def parquets_iter_batched(split, start=0, step=1):
     """
-    按批次遍历 parquet 数据集，并逐批产出文本列表。
+    按批次遍历 parquet 数据集，逐批产出文本列表。
 
     这里的批次不是训练时的 batch，而是 parquet 文件内部的 row group。
     parquet 格式通常会把一个大文件再切成多个 row group，按 row group 读取会更高效。
@@ -99,7 +99,7 @@ def parquets_iter_batched(split, start=0, step=1):
     参数说明：
     - split:
         只能是 "train" 或 "val"。
-        这个项目约定：最后一个 parquet 文件作为验证集，其余文件作为训练集。
+        项目约定：最后一个 parquet 文件作为验证集，其余文件作为训练集。
     - start, step:
         主要给分布式训练 DDP 使用。
         例如多个进程并行时，可以让不同进程跳着读取不同的 row group，避免重复。
@@ -107,9 +107,7 @@ def parquets_iter_batched(split, start=0, step=1):
 
     产出内容：
     - 每次 yield 一个 Python 列表，列表里是一批文本字符串。
-
-    对初学者的理解方式：
-    - 这个函数相当于“数据读取器”。
+    - 这个函数相当于数据读取器
     - 它不会一次性把所有数据读进内存，而是边读边产出，适合大规模语料。
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"

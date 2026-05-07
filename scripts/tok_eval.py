@@ -1,11 +1,20 @@
 """
-Evaluate compression ratio of the tokenizer.
+评估 tokenizer 的压缩效果。
+
+这里的核心问题是：
+同一段文本，被不同 tokenizer 编码后，会得到多少个 token？
+
+如果一个 tokenizer 能用更少的 token 表示同样的文本，通常说明它的压缩率更高。
+这往往意味着：
+1. 在相同上下文窗口里能塞进更多原始文本；
+2. 训练和推理时，每段文本对应的 token 序列更短；
+3. 但也不代表它一定“全面更好”，因为还要结合建模难度一起看。
 """
 
 from nanochat.tokenizer import get_tokenizer, RustBPETokenizer
 from nanochat.dataset import parquets_iter_batched
 
-# Random text I got from a random website this morning
+# 一段英文新闻文本，用来测试英文自然语言的压缩效果。
 news_text = r"""
 (Washington, D.C., July 9, 2025)- Yesterday, Mexico’s National Service of Agro-Alimentary Health, Safety, and Quality (SENASICA) reported a new case of New World Screwworm (NWS) in Ixhuatlan de Madero, Veracruz in Mexico, which is approximately 160 miles northward of the current sterile fly dispersal grid, on the eastern side of the country and 370 miles south of the U.S./Mexico border. This new northward detection comes approximately two months after northern detections were reported in Oaxaca and Veracruz, less than 700 miles away from the U.S. border, which triggered the closure of our ports to Mexican cattle, bison, and horses on May 11, 2025.
 
@@ -14,7 +23,8 @@ While USDA announced a risk-based phased port re-opening strategy for cattle, bi
 “The United States has promised to be vigilant — and after detecting this new NWS case, we are pausing the planned port reopening’s to further quarantine and target this deadly pest in Mexico. We must see additional progress combatting NWS in Veracruz and other nearby Mexican states in order to reopen livestock ports along the Southern border,” said U.S. Secretary of Agriculture Brooke L. Rollins. “Thanks to the aggressive monitoring by USDA staff in the U.S. and in Mexico, we have been able to take quick and decisive action to respond to the spread of this deadly pest.”
 """.strip()
 
-# Random Korean text (to test non-English compression)
+# 一段韩文文本，用来测试非英文文本的压缩效果。
+# 这很重要，因为 tokenizer 不只是服务英文。
 korean_text = r"""
 정직한 사실 위에, 공정한 시선을 더하다
 Herald Korea Times
@@ -29,7 +39,8 @@ Herald Korea Times
 **모든 쟁점에 대해 ‘무엇이 쟁점인지’, ‘누가 무엇을 주장하는지’, ‘사실은 무엇인지’**를 명확히 전달하는 데 집중합니다.
 """.strip()
 
-# Random piece of code
+# 一段代码文本，用来测试“程序代码”这种特殊分布文本的压缩效果。
+# 代码里会有缩进、符号、关键字、变量名，分布和自然语言差异很大。
 code_text = r"""
 class BasicTokenizer(Tokenizer):
 
@@ -41,29 +52,30 @@ class BasicTokenizer(Tokenizer):
         num_merges = vocab_size - 256
 
         # input text preprocessing
-        text_bytes = text.encode("utf-8") # raw bytes
-        ids = list(text_bytes) # list of integers in range 0..255
+        text_bytes = text.encode("utf-8") # 原始 UTF-8 字节流
+        ids = list(text_bytes) # 把字节流转成 0..255 的整数序列
 
-        # iteratively merge the most common pairs to create new tokens
+        # 反复合并最常见的相邻字节对，逐步构造新 token
         merges = {} # (int, int) -> int
         vocab = {idx: bytes([idx]) for idx in range(256)} # int -> bytes
         for i in range(num_merges):
-            # count up the number of times every consecutive pair appears
+            # 统计每个相邻 pair 出现了多少次
             stats = get_stats(ids)
-            # find the pair with the highest count
+            # 找到出现次数最多的 pair
             pair = max(stats, key=stats.get)
-            # mint a new token: assign it the next available id
+            # 创建一个新 token，id 使用当前可用的下一个编号
             idx = 256 + i
-            # replace all occurrences of pair in ids with idx
+            # 把序列里所有这个 pair 替换成新 token id
             ids = merge(ids, pair, idx)
-            # save the merge
+            # 记录这次 merge 规则
             merges[pair] = idx
             vocab[idx] = vocab[pair[0]] + vocab[pair[1]]
-            # prints
+            # 打印训练过程
             if verbose:
                 print(f"merge {i+1}/{num_merges}: {pair} -> {idx} ({vocab[idx]}) had {stats[pair]} occurrences")
 """.strip()
 
+# 一段数学 LaTeX 文本，用来测试公式、反斜杠、花括号等符号密集文本。
 math_text = r"""
 \documentclass[12pt]{article}
 \usepackage{amsmath,amsthm,amssymb}
@@ -143,12 +155,19 @@ science_text = r"""
 Photosynthesis is a photochemical energy transduction process in which light-harvesting pigment–protein complexes within the thylakoid membranes of oxygenic phototrophs absorb photons and initiate charge separation at the reaction center, driving the linear electron transport chain from water to NADP⁺ via photosystem II, the cytochrome b₆f complex, and photosystem I, concomitantly generating a trans-thylakoid proton motive force utilized by chloroplastic ATP synthase. The light-dependent reactions produce ATP and NADPH, which fuel the Calvin–Benson–Bassham cycle in the stroma, wherein ribulose-1,5-bisphosphate is carboxylated by ribulose-1,5-bisphosphate carboxylase/oxygenase (RuBisCO) to form 3-phosphoglycerate, subsequently reduced and regenerated through a series of enzymatic steps, enabling net assimilation of CO₂ into triose phosphates and ultimately carbohydrates. This process is tightly regulated by photoprotective mechanisms, redox feedback, and metabolite flux, representing a central biochemical pathway coupling solar energy capture to the biosphere’s primary productivity.
 """.strip()
 
-# The tokenizer was trained on data from earlier shards, so it has seen this data
+# 再取一小部分训练集和验证集文本。
+#
+# 这样做有两个目的：
+# 1. 看看 tokenizer 在“项目自己的真实数据”上压缩效果如何；
+# 2. 对比它在见过的数据分布和没特别见过的数据分布上的表现差异。
+#
+# 注：这里的 train shard 来自训练语料，因此我们的 tokenizer 大概率已经“见过类似分布”。
 train_docs = next(parquets_iter_batched(split="train"))
 train_text = "\n".join(train_docs)
 val_docs = next(parquets_iter_batched(split="val"))
 val_text = "\n".join(val_docs)
 
+# 把所有待评估文本组织成一个列表，后面统一循环处理。
 all_text = [
     ("news", news_text),
     ("korean", korean_text),
@@ -160,16 +179,22 @@ all_text = [
 if val_text:
     all_text.append(("fwe-val", val_text))
 
-# Try out current default compared to GPT-2 and GPT-4 tokenizers
+# 分别评估三种 tokenizer：
+# - gpt2: 经典 GPT-2 tokenizer
+# - gpt4: 这里用 cl100k_base 近似代表 GPT-4 风格 tokenizer
+# - ours: 当前项目自己训练出来的 tokenizer
+#
+# 这样可以回答一个很实际的问题：
+# “我们自己训练的 tokenizer，在这些文本上压缩率到底比现成 tokenizer 好还是差？”
 tokenizer_results = {}
 vocab_sizes = {}
 
 for tokenizer_name in ["gpt2", "gpt4", "ours"]:
 
     if tokenizer_name == "gpt2":
-        tokenizer = RustBPETokenizer.from_pretrained("gpt2") # gpt-2 base model tokenizer
+        tokenizer = RustBPETokenizer.from_pretrained("gpt2") # GPT-2 基础模型使用的 tokenizer
     elif tokenizer_name == "gpt4":
-        tokenizer = RustBPETokenizer.from_pretrained("cl100k_base") # gpt-4 base model tokenizer
+        tokenizer = RustBPETokenizer.from_pretrained("cl100k_base") # GPT-4 系常见的 cl100k_base tokenizer
     else:
         tokenizer = get_tokenizer()
 
@@ -177,10 +202,14 @@ for tokenizer_name in ["gpt2", "gpt4", "ours"]:
     tokenizer_results[tokenizer_name] = {}
 
     for name, text in all_text:
+        # 先做 encode/decode 一致性检查，确保 tokenizer 至少是可逆的。
         encoded = tokenizer.encode(text)
         decoded = tokenizer.decode(encoded)
         assert decoded == text
 
+        # ratio = 原始字节数 / token 数
+        # 这个值越大，表示“每个 token 平均承载的原始字节越多”，
+        # 通常可以理解为压缩率越好。
         encoded_bytes = text.encode('utf-8')
         ratio = len(encoded_bytes) / len(encoded)
         tokenizer_results[tokenizer_name][name] = {
@@ -189,19 +218,20 @@ for tokenizer_name in ["gpt2", "gpt4", "ours"]:
             'ratio': ratio
         }
 
-# ANSI color codes
+# ANSI 颜色码，用于在终端里高亮显示谁的压缩效果更好。
 GREEN = '\033[92m'
 RED = '\033[91m'
 RESET = '\033[0m'
 
-# Print vocab sizes
+# 先打印词表大小。
+# 词表大小会影响 tokenizer 的表达能力，也会影响模型输出层大小。
 print(f"\nVocab sizes:")
 print(f"GPT-2: {vocab_sizes['gpt2']}")
 print(f"GPT-4: {vocab_sizes['gpt4']}")
 print(f"Ours: {vocab_sizes['ours']}")
 
 def print_comparison(baseline_name, baseline_results, ours_results, all_text):
-    """Print comparison table between baseline tokenizer and ours."""
+    """打印基线 tokenizer 与我们自己的 tokenizer 的对比表。"""
     print(f"\nComparison with {baseline_name}:")
     print("=" * 95)
     print(f"{'Text Type':<10} {'Bytes':<8} {baseline_name:<15} {'Ours':<15} {'Relative':<12} {'Better':<10}")
@@ -212,11 +242,15 @@ def print_comparison(baseline_name, baseline_results, ours_results, all_text):
         baseline_data = baseline_results[name]
         ours_data = ours_results[name]
 
-        # Calculate relative difference (positive means ours is better, negative means worse)
-        # Using tokens: fewer tokens is better, so we calculate (baseline_tokens - ours_tokens) / baseline_tokens
+        # 计算相对差异。
+        # 这里用 token 数来比较：token 越少通常越好。
+        #
+        # relative_diff > 0: 我们的 tokenizer 用的 token 更少，压缩更好
+        # relative_diff < 0: 我们的 tokenizer 用的 token 更多，压缩更差
         relative_diff = ((baseline_data['tokens'] - ours_data['tokens']) / baseline_data['tokens']) * 100
 
-        # Determine which has better compression (higher ratio = better)
+        # 根据 ratio 判断谁压缩更好。
+        # ratio 越高，表示每个 token 平均覆盖的字节越多。
         if baseline_data['ratio'] > ours_data['ratio']:
             baseline_color, ours_color = GREEN, RED
             better = baseline_name
@@ -238,11 +272,12 @@ def print_comparison(baseline_name, baseline_results, ours_results, all_text):
               f"{diff_color}{relative_diff:+7.1f}%{RESET}     "
               f"{better:<10}")
 
-# Print comparisons
+# 分别和 GPT-2、GPT-4 风格 tokenizer 做对比。
 print_comparison("GPT-2", tokenizer_results['gpt2'], tokenizer_results['ours'], all_text)
 print_comparison("GPT-4", tokenizer_results['gpt4'], tokenizer_results['ours'], all_text)
 
-# Log to report
+# 把评估结果整理成 markdown 表格，写入 report。
+# 这样后续查看实验记录时，不需要重新跑脚本也能看到结果摘要。
 from nanochat.report import get_report
 lines = []
 for baseline_name in ["GPT-2", "GPT-4"]:
