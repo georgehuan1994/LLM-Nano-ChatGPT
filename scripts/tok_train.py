@@ -131,6 +131,13 @@ special_set = set(tokenizer.get_special_tokens())
 
 # 对词表中的每个 token id，单独 decode 成字符串。
 # 这样可以知道这个 token 实际代表什么文本片段。
+#
+# 这里的 token_strings 很容易让人疑惑：
+# 它不会被保存到磁盘，也不会被项目里的其他模块直接读取。
+# 它只是一个“一次性中间桥梁”：
+# token_id -> token 字符串 -> UTF-8 字节数 -> token_bytes.pt
+#
+# 真正会被后续训练/评估消费的，是最终保存下来的 token_bytes.pt。
 token_strings = [tokenizer.decode([token_id]) for token_id in range(vocab_size)]
 token_bytes = []
 for token_id in range(vocab_size):
@@ -150,6 +157,18 @@ token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
 with open(token_bytes_path, "wb") as f:
     torch.save(token_bytes, f)
 print(f"Saved token_bytes to {token_bytes_path}")
+
+# 后续消费链路大致是：
+# tok_train.py
+#   -> 写出 tokenizer.pkl + token_bytes.pt
+# nanochat.tokenizer.get_tokenizer()
+#   -> 读取 tokenizer.pkl，供数据编码、训练、采样使用
+# nanochat.tokenizer.get_token_bytes()
+#   -> 读取 token_bytes.pt，供 BPB 评估使用
+# scripts/base_train.py / scripts/base_eval.py / scripts/chat_sft.py
+#   -> 调用 evaluate_bpb(...)
+# nanochat/loss_eval.py
+#   -> 用 token_bytes 把“每 token loss”换算成“每 byte 的 bits”
 
 # 记录训练摘要到 report 系统，方便后续统一查看实验结果。
 from nanochat.report import get_report

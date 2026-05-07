@@ -9,6 +9,14 @@
 1. 在相同上下文窗口里能塞进更多原始文本；
 2. 训练和推理时，每段文本对应的 token 序列更短；
 3. 但也不代表它一定“全面更好”，因为还要结合建模难度一起看。
+
+这个脚本并不训练 tokenizer，也不评估语言模型本身。
+它只回答一个更窄但很关键的问题：
+
+“给定同一批文本，不同 tokenizer 会把它切成多长的 token 序列？”
+
+所以你可以把 tok_eval.py 理解为：
+对 tok_train.py 产出的 tokenizer 做一次“编码质量体检”。
 """
 
 from nanochat.tokenizer import get_tokenizer, RustBPETokenizer
@@ -162,12 +170,16 @@ Photosynthesis is a photochemical energy transduction process in which light-har
 # 2. 对比它在见过的数据分布和没特别见过的数据分布上的表现差异。
 #
 # 注：这里的 train shard 来自训练语料，因此我们的 tokenizer 大概率已经“见过类似分布”。
+# 这里用 next(...) 只取一个 batch，是为了让评估脚本足够轻量：
+# 它想做的是“快速 sanity check”，不是一场大规模基准测试。
 train_docs = next(parquets_iter_batched(split="train"))
 train_text = "\n".join(train_docs)
 val_docs = next(parquets_iter_batched(split="val"))
 val_text = "\n".join(val_docs)
 
 # 把所有待评估文本组织成一个列表，后面统一循环处理。
+# 每个元素都是 (名字, 文本内容)。
+# 这样后面无论是做 encode/decode 检查、算压缩率、打印表格，逻辑都能统一。
 all_text = [
     ("news", news_text),
     ("korean", korean_text),
@@ -186,6 +198,10 @@ if val_text:
 #
 # 这样可以回答一个很实际的问题：
 # “我们自己训练的 tokenizer，在这些文本上压缩率到底比现成 tokenizer 好还是差？”
+#
+# 注意：
+# 这里说的 “GPT-4 tokenizer” 其实不是某个闭源模型的完整内部实现，
+# 而是用 OpenAI 生态里常见的 cl100k_base 编码器来做近似对比。
 tokenizer_results = {}
 vocab_sizes = {}
 
@@ -203,6 +219,7 @@ for tokenizer_name in ["gpt2", "gpt4", "ours"]:
 
     for name, text in all_text:
         # 先做 encode/decode 一致性检查，确保 tokenizer 至少是可逆的。
+        # 如果一个 tokenizer 不能无损还原文本，那它在这个项目里就不合格。
         encoded = tokenizer.encode(text)
         decoded = tokenizer.decode(encoded)
         assert decoded == text
@@ -210,6 +227,10 @@ for tokenizer_name in ["gpt2", "gpt4", "ours"]:
         # ratio = 原始字节数 / token 数
         # 这个值越大，表示“每个 token 平均承载的原始字节越多”，
         # 通常可以理解为压缩率越好。
+        #
+        # 这里刻意使用“字节数”而不是“字符数”：
+        # 因为项目后面关心的是 BPB(bits per byte)，
+        # 而 UTF-8 下中文、emoji、特殊符号的字节长度并不相同。
         encoded_bytes = text.encode('utf-8')
         ratio = len(encoded_bytes) / len(encoded)
         tokenizer_results[tokenizer_name][name] = {
@@ -251,6 +272,10 @@ def print_comparison(baseline_name, baseline_results, ours_results, all_text):
 
         # 根据 ratio 判断谁压缩更好。
         # ratio 越高，表示每个 token 平均覆盖的字节越多。
+        #
+        # 这里同时打印 tokens 和 ratio，是为了避免只盯着单一数字：
+        # - tokens 更直观，直接告诉你序列长度；
+        # - ratio 更贴近“每个 token 装了多少原始信息”。
         if baseline_data['ratio'] > ours_data['ratio']:
             baseline_color, ours_color = GREEN, RED
             better = baseline_name
@@ -278,6 +303,9 @@ print_comparison("GPT-4", tokenizer_results['gpt4'], tokenizer_results['ours'], 
 
 # 把评估结果整理成 markdown 表格，写入 report。
 # 这样后续查看实验记录时，不需要重新跑脚本也能看到结果摘要。
+#
+# 注意这个 report 只是“结果快照”。
+# 它保存的是评估统计，不会反向参与训练，也不会影响 tokenizer 本身。
 from nanochat.report import get_report
 lines = []
 for baseline_name in ["GPT-2", "GPT-4"]:
