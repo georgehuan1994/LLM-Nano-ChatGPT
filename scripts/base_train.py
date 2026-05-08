@@ -1,5 +1,5 @@
 """
-这个脚本负责训练项目里的 base model，也就是“基础语言模型”。
+这个脚本负责训练项目里的 base model
 
 这里训练的还不是聊天助手，而是一个标准的自回归语言模型：
 给它前面的 token，让它预测下一个 token。
@@ -127,7 +127,6 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", 
 
 # Flash Attention 状态检查。
 #
-# 对初学者可以这样理解：
 # attention 本身是 Transformer 最核心、也最贵的计算之一。
 # Flash Attention 是更高效的 attention 实现。
 # 如果能用上 FA3，训练速度和显存效率都会更好。
@@ -163,7 +162,7 @@ print0(f"Vocab size: {vocab_size:,}")
 # 构建模型
 #
 # 对纯小白来说，这里最关键的概念有三个：
-# 1. `depth`：Transformer block 堆多少层，也就是网络有多“深”
+# 1. `depth`：Transformer block 堆多少层，也就是网络有多深
 # 2. `n_embd`：每个 token 在网络内部表示成多长的向量，也就是隐藏维度
 # 3. `n_head`：注意力头的数量，表示把注意力机制分成多少个并行子空间去看信息
 #

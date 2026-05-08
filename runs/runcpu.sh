@@ -136,6 +136,11 @@ python -m scripts.chat_sft \
     --max-seq-len=512 \
     --device-batch-size=32 \
     --total-batch-size=16384 \
+    --embedding-lr=0.03 \
+    --unembedding-lr=0.001 \
+    --matrix-lr=0.005 \
+    --init-lr-frac=0.2 \
+    --warmup-ratio=0.05 \
     --eval-every=200 \
     --eval-tokens=524288 \
     --num-iterations=1500 \
