@@ -53,6 +53,7 @@ parser.add_argument("--total-batch-size", type=int, default=None, help="total ba
 parser.add_argument("--embedding-lr", type=float, default=None, help="learning rate for embedding parameters (Adam) (default: inherit from pretrain)")
 parser.add_argument("--unembedding-lr", type=float, default=None, help="learning rate for unembedding parameters (Adam) (default: inherit from pretrain)")
 parser.add_argument("--matrix-lr", type=float, default=None, help="learning rate for matrix parameters (Muon) (default: inherit from pretrain)")
+parser.add_argument("--scalar-lr", type=float, default=None, help="learning rate for scalar params like x0_lambdas / resid_lambdas (default: 0.5 on GPU, 0.05 on CPU/MPS)")
 parser.add_argument("--init-lr-frac", type=float, default=0.8, help="initial LR as fraction of base LR")
 parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
@@ -134,7 +135,15 @@ token_bytes = get_token_bytes(device=device)
 
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
 # Note that pretraining ramps weight_decay to zero by end of pretraining, so SFT continues with zero
-optimizer = model.setup_optimizer(unembedding_lr=args.unembedding_lr, embedding_lr=args.embedding_lr, matrix_lr=args.matrix_lr, weight_decay=0.0)
+opt_kwargs = dict(
+    unembedding_lr=args.unembedding_lr,
+    embedding_lr=args.embedding_lr,
+    matrix_lr=args.matrix_lr,
+    weight_decay=0.0,
+)
+if args.scalar_lr is not None:
+    opt_kwargs["scalar_lr"] = args.scalar_lr
+optimizer = model.setup_optimizer(**opt_kwargs)
 
 # Optionally warm-start optimizer from pretrained checkpoint (momentum buffers etc.)
 # Note: load_state_dict overwrites param_group metadata (LRs, betas, etc.) with the
