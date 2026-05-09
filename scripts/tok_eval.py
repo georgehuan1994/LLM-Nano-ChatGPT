@@ -8,15 +8,15 @@
 这往往意味着：
 1. 在相同上下文窗口里能塞进更多原始文本；
 2. 训练和推理时，每段文本对应的 token 序列更短；
-3. 但也不代表它一定“全面更好”，因为还要结合建模难度一起看。
+3. 但也不代表它一定 “全面更好”，因为还要结合建模难度一起看。
 
 这个脚本并不训练 tokenizer，也不评估语言模型本身。
 它只回答一个更窄但很关键的问题：
 
 “给定同一批文本，不同 tokenizer 会把它切成多长的 token 序列？”
 
-所以你可以把 tok_eval.py 理解为：
-对 tok_train.py 产出的 tokenizer 做一次“编码质量体检”。
+所以可以把 tok_eval.py 理解为：
+对 tok_train.py 产出的 tokenizer 做一次 “编码质量体检”。
 """
 
 from nanochat.tokenizer import get_tokenizer, RustBPETokenizer
@@ -32,7 +32,6 @@ While USDA announced a risk-based phased port re-opening strategy for cattle, bi
 """.strip()
 
 # 一段韩文文本，用来测试非英文文本的压缩效果。
-# 这很重要，因为 tokenizer 不只是服务英文。
 korean_text = r"""
 정직한 사실 위에, 공정한 시선을 더하다
 Herald Korea Times
@@ -169,9 +168,9 @@ Photosynthesis is a photochemical energy transduction process in which light-har
 # 1. 看看 tokenizer 在“项目自己的真实数据”上压缩效果如何；
 # 2. 对比它在见过的数据分布和没特别见过的数据分布上的表现差异。
 #
-# 注：这里的 train shard 来自训练语料，因此我们的 tokenizer 大概率已经“见过类似分布”。
+# 注：这里的 train shard 来自训练语料，因此我们的 tokenizer 大概率已经 “见过类似分布”。
 # 这里用 next(...) 只取一个 batch，是为了让评估脚本足够轻量：
-# 它想做的是“快速 sanity check”，不是一场大规模基准测试。
+# 它想做的是 “快速 sanity check”，不是一场大规模基准测试。
 train_docs = next(parquets_iter_batched(split="train"))
 train_text = "\n".join(train_docs)
 val_docs = next(parquets_iter_batched(split="val"))
@@ -225,10 +224,10 @@ for tokenizer_name in ["gpt2", "gpt4", "ours"]:
         assert decoded == text
 
         # ratio = 原始字节数 / token 数
-        # 这个值越大，表示“每个 token 平均承载的原始字节越多”，
+        # 这个值越大，表示 “每个 token 平均承载的原始字节越多”，
         # 通常可以理解为压缩率越好。
         #
-        # 这里刻意使用“字节数”而不是“字符数”：
+        # 这里刻意使用 “字节数” 而不是 “字符数”：
         # 因为项目后面关心的是 BPB(bits per byte)，
         # 而 UTF-8 下中文、emoji、特殊符号的字节长度并不相同。
         encoded_bytes = text.encode('utf-8')
@@ -304,7 +303,7 @@ print_comparison("GPT-4", tokenizer_results['gpt4'], tokenizer_results['ours'], 
 # 把评估结果整理成 markdown 表格，写入 report。
 # 这样后续查看实验记录时，不需要重新跑脚本也能看到结果摘要。
 #
-# 注意这个 report 只是“结果快照”。
+# 注意这个 report 只是结果快照。
 # 它保存的是评估统计，不会反向参与训练，也不会影响 tokenizer 本身。
 from nanochat.report import get_report
 lines = []

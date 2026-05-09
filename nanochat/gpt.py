@@ -4,7 +4,7 @@
 如果把整个训练流程拆开看：
 - tokenizer 负责把字符串变成 token id
 - dataloader 负责把 token id 组织成训练批次
-- 本文件里的 GPT 则负责真正执行“神经网络计算”
+- 本文件里的 GPT 则负责真正执行 “神经网络计算”
 
 也就是说：
 
@@ -16,7 +16,7 @@
 
 这是整个项目最核心的模型定义文件。
 
-这份实现相较于“教科书版 GPT”有一些工程/研究改造，主要包括：
+这份实现相较于 “教科书版 GPT” 有一些工程/研究改造，主要包括：
 1. 使用 rotary embeddings，而不是单独的绝对位置 embedding
 2. 对 Q/K 做 norm
 3. token embedding 与 lm_head 不共享权重
@@ -152,7 +152,7 @@ class CausalSelfAttention(nn.Module):
     它解决的问题是：
     “当前 token 在生成/理解时，应该重点参考前面哪些 token？”
 
-    “因果(causal)”的意思是：
+    “因果(causal)” 的意思是：
     当前时刻只能看自己和前文，不能偷看未来 token。
 
     这个模块的主线流程是：
@@ -177,8 +177,8 @@ class CausalSelfAttention(nn.Module):
         # c_v: 输入 -> value
         # c_proj: 多头聚合后的输出 -> 再投影回残差流维度
         self.c_q = Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
-        self.c_k = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_v = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.c_k = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_proj = Linear(self.n_embd, self.n_embd, bias=False)
 
         # ve_gate 是一个额外实验设计，用来控制 Value Embedding 注入强度。
@@ -191,9 +191,9 @@ class CausalSelfAttention(nn.Module):
         # 第一步：把输入 hidden states 投影成 q / k / v。
         #
         # 对初学者可以这样记：
-        # - q(query)：当前这个位置“想找什么”
-        # - k(key)  ：每个位置“我这里有什么标签可供匹配”
-        # - v(value)：每个位置“我真正携带的信息内容”
+        # - q(query)：当前这个位置 “想找什么”
+        # - k(key)  ：每个位置 “我这里有什么标签可供匹配”
+        # - v(value)：每个位置 “我真正携带的信息内容”
         #
         # 最终张量形状会变成：
         #   (B, T, H, D)
@@ -255,8 +255,8 @@ class MLP(nn.Module):
     """
     Transformer block 里的前馈网络（MLP）。
 
-    如果说 attention 负责“跨位置交换信息”，
-    那 MLP 更像是“每个位置自己在本地做更复杂的非线性变换”。
+    如果说 attention 负责 “跨位置交换信息”，
+    那 MLP 更像是 “每个位置自己在本地做更复杂的非线性变换”。
 
     常见直觉是：
     - attention 让 token 彼此沟通

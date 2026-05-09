@@ -101,6 +101,7 @@ tokenizer.save(tokenizer_dir)
 # - 缩写
 # - 特殊符号
 # - Unicode / 中文 / emoji
+#
 # 用来检查 tokenizer 是否能稳定处理常见字符类型。
 test_text = """Hello world! This is a test.
 Numbers: 123, 4567, 89
@@ -113,19 +114,6 @@ assert decoded == test_text
 
 # -----------------------------------------------------------------------------
 # 额外缓存一个 token_id -> token 字节数 的映射表，为后续评估准备元数据
-#
-# 这是本脚本里一个很重要、但初看不太直观的步骤。
-#
-# 为什么要做这件事？
-# 因为项目后面会关心 bits per byte, 简写 BPB。
-#
-# 直觉上：
-# - 普通的平均 loss 是 “每个 token 的平均损失”；
-# - 但不同 tokenizer 的 token 粒度不同，token 数量不能直接横向比较；
-# - 如果换成 “每个字节的平均信息量”，就更容易跨 tokenizer 比较。
-#
-# 为了高效计算 BPB，我们预先知道每个 token 对应多少个 UTF-8 字节。
-# 这样在评估时就不需要反复现算。
 vocab_size = tokenizer.get_vocab_size()
 special_set = set(tokenizer.get_special_tokens())
 
@@ -168,7 +156,7 @@ print(f"Saved token_bytes to {token_bytes_path}")
 # scripts/base_train.py / scripts/base_eval.py / scripts/chat_sft.py
 #   -> 调用 evaluate_bpb(...)
 # nanochat/loss_eval.py
-#   -> 用 token_bytes 把“每 token loss”换算成“每 byte 的 bits”
+#   -> 用 token_bytes 把 “每 token loss” 换算成 “每 byte 的 bits”
 
 # 记录训练摘要到 report 系统，方便后续统一查看实验结果。
 from nanochat.report import get_report

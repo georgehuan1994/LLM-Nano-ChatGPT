@@ -2,12 +2,6 @@
 
 set -e
 
-# 展示一个在 CPU（或 MacBook 上的 MPS）上运行的示例，用来体验项目中的部分代码流程
-# 此脚本最后一次更新/调优时间：2026 年 1 月 17 日
-
-# 运行方式：
-# bash runs/runcpu.sh
-
 # 注意：训练 LLM 需要 GPU 算力和一定成本在 MacBook 上很难训练出很好的效果
 # 请把这个脚本理解为一个用于学习/体验的有趣演示，不要期待它能训练出很强的模型
 # 你也可以手动运行此脚本：把下面的命令一条一条复制到终端中执行
@@ -15,8 +9,6 @@ set -e
 # 设置 NANOCHAT_BASE_DIR 环境变量，指定 nanochat 的数据、tokenizer、checkpoint 等文件的存储位置
 # 这里改为放到当前项目目录下的 .nanochat 子目录，便于统一查看、备份和删除
 export NANOCHAT_BASE_DIR="$PWD/.nanochat"
-
-# 创建上面的项目内输出目录
 mkdir -p $NANOCHAT_BASE_DIR
 
 # 目录示例：
@@ -24,9 +16,6 @@ mkdir -p $NANOCHAT_BASE_DIR
 # - tokenizer 文件：通常也会放在这个基础目录下
 # - checkpoint / 中间产物：通常也会放在这个基础目录下
 
-# 检查系统里是否已经安装 uv
-# command -v uv：查找 uv 命令是否存在
-# curl -LsSf https://astral.sh/uv/install.sh | sh：下载 uv 的安装脚本并执行
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 如果是刚安装的 uv，当前 shell 可能还没有加载 ~/.local/bin 到 PATH
@@ -40,7 +29,6 @@ command -v uv &> /dev/null || {
 }
 
 # 如果当前目录下还没有 .venv，就用 uv 创建一个 Python 虚拟环境
-# .venv 是隔离的 Python 环境，避免依赖污染系统 Python
 [ -d ".venv" ] || uv venv
 
 # 根据 pyproject.toml/uv.lock 安装项目依赖
@@ -70,8 +58,7 @@ fi
 # 代码里的默认 -n -1 表示下载全部可用训练分片；完整训练会更慢、更占空间
 python -m nanochat.dataset -n 8
 
-# 训练 tokenizer（分词器）
-# tokenizer 的作用：把文本切成 token ID，模型实际学习的是 token 序列，不是原始字符串
+# 训练 tokenizer
 # --max-chars=2000000000 表示最多用 20 亿个字符训练分词器；如果数据不够，就用已有数据
 # 字符越多，分词器越稳定，但训练时间也越长
 python -m scripts.tok_train --max-chars=2000000000
@@ -117,10 +104,9 @@ python -m scripts.base_train \
 # --max-per-task=16：每个核心评测任务最多评 16 道题；这是为了让 CPU 演示更快
 python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per-task=16
 
-# 下载一份用于“身份/聊天风格”的 SFT 数据
+# 下载一份用于 “身份/聊天风格” 的 SFT 数据
 # curl -L：如果链接发生跳转，继续跟随跳转下载
 # -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl：把下载结果保存到指定路径
-# jsonl 表示每行一个 JSON，常用于训练数据
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # 监督微调 SFT（Supervised Fine-Tuning）

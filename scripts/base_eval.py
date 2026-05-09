@@ -12,13 +12,13 @@
 
 对初学者来说，可以把它理解成：
 
-- `base_train.py` 负责“让模型学”
-- `base_eval.py` 负责“检查模型学得怎么样”
+- `base_train.py` 负责 “让模型学”
+- `base_eval.py` 负责 “检查模型学得怎么样”
 
 其中：
-- BPB 更像“语言建模内功分”
-- CORE 更像“做题能力分”
-- sample 更像“现场口头表现”
+- BPB 更像 “语言建模内功分”
+- CORE 更像 “做题能力分”
+- sample 更像 “现场口头表现”
 """
 import os
 import csv
@@ -57,8 +57,6 @@ class ModelWrapper:
 
         model(x, y, loss_reduction=...)
 
-    这是一种很常见的工程手法：
-    不强迫所有模型实现完全相同的底层类，只在外面包一层统一接口。
     """
     def __init__(self, model, max_seq_len=None):
         self.model = model
@@ -119,7 +117,7 @@ def get_hf_token_bytes(tokenizer, device="cpu"):
 # -----------------------------------------------------------------------------
 # CORE 评估
 #
-# CORE 可以理解成一个“任务能力基准”。
+# CORE 可以理解成一个 “任务能力基准”。
 # 它不只是问：
 #   “模型会不会预测下一个 token”
 # 而是更关心：
@@ -300,7 +298,7 @@ def main():
             engine = Engine(model, tokenizer)
             print0("\nConditioned samples:")
             for prompt in prompts:
-                # prepend BOS 的作用是明确告诉模型“这是一个新序列的开始”。
+                # prepend BOS 的作用是明确告诉模型 “这是一个新序列的开始”。
                 tokens = tokenizer(prompt, prepend="<|bos|>")
                 sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
                 sample_str = tokenizer.decode(sample[0])
@@ -321,7 +319,7 @@ def main():
 
     # --- BPB evaluation ---
     #
-    # 这部分最接近“语言模型本职工作”的评估：
+    # 这部分最接近 “语言模型本职工作” 的评估：
     # 在真实 train/val token 流上，模型预测下一个 token 的能力如何。
     #
     # 但项目不是简单输出 mean loss，而是输出 BPB，
@@ -348,8 +346,8 @@ def main():
 
     # --- CORE evaluation ---
     #
-    # 如果说 BPB 更像“基本功分数”，
-    # 那 CORE 更像“拿模型去做实际 few-shot 任务时的表现分数”。
+    # 如果说 BPB 更像 “基本功分数”，
+    # 那 CORE 更像 “拿模型去做实际 few-shot 任务时的表现分数”。
     if 'core' in eval_modes:
         print0("\n" + "="*80)
         print0("CORE Evaluation")
