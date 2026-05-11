@@ -25,8 +25,11 @@ from nanochat.common import get_base_dir
 # -----------------------------------------------------------------------------
 # 当前预训练数据集的基本配置
 
-# 远程数据集的基础下载地址，实际下载某个 shard 时，会在这个地址后面拼接具体文件名
-BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
+# 远程数据集的基础下载地址，实际下载某个 shard 时，会在这个地址后面拼接具体文件名。
+# AutoDL 等环境访问 huggingface.co 可能不稳定，可通过 HF_ENDPOINT 切到镜像：
+#   HF_ENDPOINT=https://hf-mirror.com python -m nanochat.dataset -n 170
+HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+BASE_URL = f"{HF_ENDPOINT}/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 
 # 最后一个 shard 的编号，对应 shard_06542.parquet
 MAX_SHARD = 6542
@@ -217,6 +220,7 @@ if __name__ == "__main__":
 
     # 开始并行下载
     print(f"Downloading {len(ids_to_download)} shards using {args.num_workers} workers...")
+    print(f"Source endpoint: {HF_ENDPOINT}")
     print(f"Target directory: {DATA_DIR}")
     print()
     with Pool(processes=args.num_workers) as pool:

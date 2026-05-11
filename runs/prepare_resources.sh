@@ -17,6 +17,7 @@ if [ ! -f "pyproject.toml" ]; then
 fi
 
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 RESOURCE_SHARDS="${RESOURCE_SHARDS:-170}"
 PYTHON=".venv/bin/python"
 
@@ -29,6 +30,7 @@ mkdir -p "$NANOCHAT_BASE_DIR"
 
 echo "Preparing resources in: $NANOCHAT_BASE_DIR"
 echo "Dataset shards: $RESOURCE_SHARDS"
+echo "HuggingFace endpoint: $HF_ENDPOINT"
 
 "$PYTHON" -m nanochat.dataset -n "$RESOURCE_SHARDS"
 "$PYTHON" -m scripts.tok_train
