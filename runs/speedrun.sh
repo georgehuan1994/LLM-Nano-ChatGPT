@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
 # 之后用 tmux attach -t smoke 重连，Ctrl+B D 分离会话
 
@@ -8,6 +10,9 @@
 # 注意：这是面向 GPU 服务器的“正式速通”脚本；如果你只有 CPU/MacBook，请改用 runcpu.sh
 
 # 三种典型启动方式：
+# 运行本脚本前，请先单独准备 Python/uv 环境：
+#    UV_EXTRA=gpu sh runs/setup_uv_env.sh
+#
 # 1) 最简单的方式：直接运行
 #    bash runs/speedrun.sh
 # 2) 在 tmux 会话中运行（因为整个跑完需要约 3 小时，避免 SSH 断开导致中断）
@@ -26,7 +31,7 @@
 export OMP_NUM_THREADS=1
 
 # export NANOCHAT_BASE_DIR="$PWD/.nanochat"
-export NANOCHAT_BASE_DIR="$HOME/autodl-fs/.nanochat"
+export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
 
 mkdir -p $NANOCHAT_BASE_DIR
 
@@ -93,57 +98,32 @@ echo " 训练规模: SMOKE=$SMOKE  DEPTH=$DEPTH  DATASET_SHARDS_BG=$DATASET_SHAR
 echo "============================================================"
 
 # -----------------------------------------------------------------------------
-# 使用 uv 配置 Python 虚拟环境
-# uv 是一个非常快的 Python 包管理工具，类似 pip + venv 的现代替代品
+# Python 环境检查
+# uv 安装和依赖同步已经被完全拆分到 runs/setup_uv_env.sh。
+# 本脚本只负责训练流程，不再修改 Python 环境。
+PYTHON=".venv/bin/python"
+TORCHRUN=".venv/bin/torchrun"
 
-# 如果系统中没有安装 uv，就通过官方安装脚本进行安装
-command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-# uv 默认装到 ~/.local/bin，但当前 shell 的 PATH 可能还没包含它（首次安装时尤其常见）
-# 这里显式把 ~/.local/bin 加进 PATH，避免后续 uv 命令找不到
-export PATH="$HOME/.local/bin:$PATH"
-
-# -----------------------------------------------------------------------------
-# 国内镜像加速（CN_MIRROR=1）
-# 在 AutoDL/腾讯云/阿里云等国内服务器上，PyPI 和 PyTorch 官方源很慢
-# 启用后会做两件事：
-#   1) PyPI 走清华镜像（通过 UV_DEFAULT_INDEX 环境变量，无侵入）
-#   2) PyTorch 走阿里云镜像（临时改写 pyproject.toml，脚本结束自动还原）
-# 用法：
-#   CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 bash runs/speedrun.sh
-CN_MIRROR=${CN_MIRROR:-0}
-if [ "$CN_MIRROR" = "1" ]; then
-    echo "[CN_MIRROR] 启用国内镜像源"
-    # 1) PyPI → 清华
-    export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
-    # 2) PyTorch → 阿里云（临时改 pyproject.toml + 退出钩子还原）
-    if ! grep -q "mirrors.aliyun.com/pytorch-wheels" pyproject.toml; then
-        cp pyproject.toml pyproject.toml.bak
-        sed -i \
-            -e 's|https://download.pytorch.org/whl/cu128|https://mirrors.aliyun.com/pytorch-wheels/cu128|g' \
-            -e 's|https://download.pytorch.org/whl/cpu|https://mirrors.aliyun.com/pytorch-wheels/cpu|g' \
-            pyproject.toml
-        # trap：无论脚本正常结束、报错、还是 Ctrl+C，都把原文件还原
-        # 避免 git 状态被污染，也避免下次跑时镜像 URL 已经在文件里
-        trap 'mv pyproject.toml.bak pyproject.toml 2>/dev/null && echo "[CN_MIRROR] 已还原 pyproject.toml" || true' EXIT
-    fi
-fi
-
-# 如果当前目录下还没有 .venv，就用 uv 创建一个本地 Python 虚拟环境
-[ -d ".venv" ] || uv venv
-# 根据 pyproject.toml/uv.lock 安装项目依赖
-# --extra gpu 表示安装 GPU 版本的额外依赖（包含 CUDA 相关包，例如 GPU 版的 PyTorch）
-# 如果是 CPU 环境，应该改用 --extra cpu（参见 runcpu.sh）
-uv sync --extra gpu
-# 激活虚拟环境，让后续 python 命令使用 .venv 里的 Python 和依赖，而不是系统 Python
-# Windows 上 uv/venv 通常生成 .venv/Scripts/activate；类 Unix 环境通常是 .venv/bin/activate
-if [ -f ".venv/Scripts/activate" ]; then
-    source .venv/Scripts/activate
-elif [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-else
-    echo "error: no activation script found in .venv"
+if [ ! -x "$PYTHON" ]; then
+    echo "error: $PYTHON is not executable. Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
     exit 1
 fi
+
+if [ ! -x "$TORCHRUN" ]; then
+    echo "error: $TORCHRUN is not executable. Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
+    exit 1
+fi
+
+"$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+missing = [name for name in ("torch", "nanochat") if importlib.util.find_spec(name) is None]
+if missing:
+    print(f"error: missing Python packages: {', '.join(missing)}")
+    print("Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh")
+    sys.exit(1)
+PY
 
 # -----------------------------------------------------------------------------
 # wandb（Weights & Biases）配置
@@ -155,7 +135,7 @@ fi
 #    `WANDB_RUN=d26 bash speedrun.sh`
 # 如果用户没有提前设置 WANDB_RUN，就默认设为 dummy
 # dummy 在代码里被作为特殊值处理，会跳过真正的 wandb 上传，等价于“关闭日志记录”
-if [ -z "$WANDB_RUN" ]; then
+if [ -z "${WANDB_RUN:-}" ]; then
     WANDB_RUN=dummy
 fi
 
@@ -164,7 +144,7 @@ fi
 # 下面这条命令会清空旧的 report 目录，并写入一个新的“开头部分”
 # 内容包括系统信息（CPU/GPU/内存/驱动版本等）和一个时间戳，标记本次运行的开始
 # 训练全部跑完后，会把所有片段拼成一份完整的 report.md
-python -m nanochat.report reset
+"$PYTHON" -m nanochat.report reset
 
 # -----------------------------------------------------------------------------
 # 训练分词器 Tokenizer
@@ -174,20 +154,20 @@ python -m nanochat.report reset
 # 因此 2e9 / 250e6 = 8 个分片
 # 每个 shard 解压前约 100MB（压缩文本），8 个 shard 大约 800MB 数据落到磁盘
 # 数据是如何准备的可以查看 dev/repackage_data_reference.py
-python -m nanochat.dataset -n 8
+"$PYTHON" -m nanochat.dataset -n 8
 # 紧接着在“后台”继续下载更多分片，让下载和 tokenizer 训练并行进行，节省总时间
 # 想达到 GPT-2 水平的预训练大约需要 150 个分片，这里多下载 20 个用于评估/缓冲，共 170 个
 # 整个数据集最多有 6542 个分片可供下载
 # `&` 把命令放到后台运行；$! 是 bash 内置变量，表示“最近一个后台进程的 PID”
 # 后续我们会用 `wait $DATASET_DOWNLOAD_PID` 等待它结束
-python -m nanochat.dataset -n $DATASET_SHARDS_BG &
+"$PYTHON" -m nanochat.dataset -n $DATASET_SHARDS_BG &
 DATASET_DOWNLOAD_PID=$!
 
 # 训练 tokenizer：词表大小为 2**15 = 32768，使用约 20 亿字符的数据
 # 词表越大，每个 token 能携带的信息越多，但 embedding 矩阵也越大
-python -m scripts.tok_train
+"$PYTHON" -m scripts.tok_train
 # 评估 tokenizer：报告压缩率、编码/解码是否正常等指标，帮助判断分词器是否可用
-python -m scripts.tok_eval
+"$PYTHON" -m scripts.tok_eval
 
 # -----------------------------------------------------------------------------
 # Base model（基础语言模型）预训练
@@ -212,10 +192,10 @@ wait $DATASET_DOWNLOAD_PID
 # --device-batch-size=16：单卡一次处理 16 条序列
 # --fp8：开启 FP8 低精度训练，H100 原生支持，速度大幅提升、显存占用更少
 # --run=$WANDB_RUN：指定 wandb 运行名；dummy 表示不上传日志
-torchrun --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 base model：包括 CORE 综合指标、训练/验证集上的 BPB（Bits Per Byte），并采样生成一些文本
 # 同样使用 $NGPU 卡并行评估，加快速度
-torchrun --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
 
 # -----------------------------------------------------------------------------
 # SFT 监督微调（Supervised Fine-Tuning）
@@ -230,9 +210,9 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-publ
 
 # 启动 SFT 训练，并在训练后评估
 # device-batch-size=16 是单卡批大小；其他超参在脚本里有合理默认值
-torchrun --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE $SFT_TRAIN_EXTRA --run=$WANDB_RUN
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE $SFT_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 SFT 后的对话模型；-i sft 表示加载“sft 阶段”产出的 checkpoint 来评估
-torchrun --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
 
 # 通过命令行和模型进行交互式聊天！
 # 不带 -p 参数时进入交互模式，可以连续多轮对话；带 -p 时是一次性提示词
@@ -247,4 +227,4 @@ torchrun --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
 # 把整个流程中各阶段产出的 markdown 片段拼接成一份完整的报告
 # 输出文件是 report.md，会被复制到当前目录方便查看
 # 这份报告里通常包含：系统信息、数据规模、tokenizer 评估、base 模型评估、SFT 模型评估等全部结果
-python -m nanochat.report generate
+"$PYTHON" -m nanochat.report generate
