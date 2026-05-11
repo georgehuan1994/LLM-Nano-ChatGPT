@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# SMOKE=1 GPU=a800 NGPU=1 screen -L -Logfile runs/speedrun.log -S smoke bash runs/speedrun.sh
+# 之后用 screen -r smoke 重连，Ctrl+A D 分离会话
+
 # 这个脚本用于训练一个达到 GPT-2 水平的 LLM（包含预训练 + 微调）
 # 它被设计为在一台“干净的” 8 卡 H100 GPU 节点上运行，整个流程大约耗时 3 小时
 # 注意：这是面向 GPU 服务器的“正式速通”脚本；如果你只有 CPU/MacBook，请改用 runcpu.sh
@@ -20,8 +23,73 @@
 # OMP_NUM_THREADS=1 限制 OpenMP 只使用 1 个线程，避免在多进程数据加载时
 # 因为线程数过多互相争抢 CPU 反而拖慢速度（PyTorch 多进程训练的常见做法）
 export OMP_NUM_THREADS=1
-export NANOCHAT_BASE_DIR="$PWD/.nanochat"
+
+# export NANOCHAT_BASE_DIR="$PWD/.nanochat"
+export NANOCHAT_BASE_DIR="$HOME/autodl-fs/.nanochat"
+
 mkdir -p $NANOCHAT_BASE_DIR
+
+# -----------------------------------------------------------------------------
+# GPU 配置切换
+# 通过两个环境变量组合选择硬件配置：
+#   GPU   = h100 | a800     （默认 h100；决定是否启用 FP8）
+#   NGPU  = 1 | 4 | 8       （默认 8；决定 torchrun 的 nproc_per_node）
+#
+# 常用组合：
+#   bash runs/speedrun.sh                           # 默认 8×H100，启用 FP8（原始配置）
+#   GPU=a800 NGPU=1 bash runs/speedrun.sh           # 1×A800，BF16
+#   GPU=a800 NGPU=4 bash runs/speedrun.sh           # 4×A800，BF16
+#   GPU=h100 NGPU=4 bash runs/speedrun.sh           # 4×H100，FP8
+#
+# 说明：A800 是 Ampere 架构（sm_80），硬件不支持 FP8，因此 GPU=a800 时强制关闭 FP8。
+GPU=${GPU:-h100}
+NGPU=${NGPU:-8}
+
+case "$GPU" in
+    h100) FP8_FLAG="--fp8" ;;
+    a800) FP8_FLAG="" ;;
+    *) echo "error: unsupported GPU=$GPU (must be h100 or a800)"; exit 1 ;;
+esac
+
+case "$NGPU" in
+    1|4|8) ;;
+    *) echo "error: unsupported NGPU=$NGPU (must be 1, 4, or 8)"; exit 1 ;;
+esac
+
+# 单卡 micro-batch 可以按需调整，OOM 时降到 8/4
+DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-16}
+
+# -----------------------------------------------------------------------------
+# 冒烟测试模式（SMOKE=1）
+# 用极小的模型 + 极少的步数跑通整条 pipeline，验证环境/代码无误
+# 适合首次上机、换硬件后、或修改了核心代码后做 sanity check
+#
+# 默认 SMOKE=0（完整训练）。设置 SMOKE=1 后会自动覆盖以下三项：
+#   - 模型深度 d24 → d12（参数量约 1/4）
+#   - base_train 步数：自动算（约 ~21k）→ 200
+#   - chat_sft 步数：跑完整个数据集 → 50
+#   - 数据下载：170 shards → 仅 8 shards（足够 d12+200 iters 训练）
+#
+# 用法示例（推荐组合）：
+#   SMOKE=1 GPU=a800 NGPU=1 bash runs/speedrun.sh    # 单卡 A800 冒烟测试
+SMOKE=${SMOKE:-0}
+
+if [ "$SMOKE" = "1" ]; then
+    DEPTH=12
+    BASE_TRAIN_EXTRA="--num-iterations=200"
+    SFT_TRAIN_EXTRA="--num-iterations=50"
+    DATASET_SHARDS_BG=8       # 冒烟时不需要额外的后台下载
+else
+    DEPTH=24
+    BASE_TRAIN_EXTRA=""       # 用 --target-param-data-ratio 自动计算步数
+    SFT_TRAIN_EXTRA=""
+    DATASET_SHARDS_BG=170
+fi
+
+echo "============================================================"
+echo " GPU 配置: GPU=$GPU  NGPU=$NGPU  DEVICE_BATCH_SIZE=$DEVICE_BATCH_SIZE  FP8_FLAG=$FP8_FLAG"
+echo " 训练规模: SMOKE=$SMOKE  DEPTH=$DEPTH  DATASET_SHARDS_BG=$DATASET_SHARDS_BG"
+echo "============================================================"
 
 # -----------------------------------------------------------------------------
 # 使用 uv 配置 Python 虚拟环境
@@ -81,8 +149,9 @@ python -m nanochat.dataset -n 8
 # 整个数据集最多有 6542 个分片可供下载
 # `&` 把命令放到后台运行；$! 是 bash 内置变量，表示“最近一个后台进程的 PID”
 # 后续我们会用 `wait $DATASET_DOWNLOAD_PID` 等待它结束
-python -m nanochat.dataset -n 170 &
+python -m nanochat.dataset -n $DATASET_SHARDS_BG &
 DATASET_DOWNLOAD_PID=$!
+
 # 训练 tokenizer：词表大小为 2**15 = 32768，使用约 20 亿字符的数据
 # 词表越大，每个 token 能携带的信息越多，但 embedding 矩阵也越大
 python -m scripts.tok_train
@@ -112,10 +181,10 @@ wait $DATASET_DOWNLOAD_PID
 # --device-batch-size=16：单卡一次处理 16 条序列
 # --fp8：开启 FP8 低精度训练，H100 原生支持，速度大幅提升、显存占用更少
 # --run=$WANDB_RUN：指定 wandb 运行名；dummy 表示不上传日志
-torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- --depth=24 --target-param-data-ratio=8 --device-batch-size=16 --fp8 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 base model：包括 CORE 综合指标、训练/验证集上的 BPB（Bits Per Byte），并采样生成一些文本
-# 同样使用 8 卡并行评估，加快速度
-torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- --device-batch-size=16
+# 同样使用 $NGPU 卡并行评估，加快速度
+torchrun --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
 
 # -----------------------------------------------------------------------------
 # SFT 监督微调（Supervised Fine-Tuning）
@@ -130,9 +199,9 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-publ
 
 # 启动 SFT 训练，并在训练后评估
 # device-batch-size=16 是单卡批大小；其他超参在脚本里有合理默认值
-torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE $SFT_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 SFT 后的对话模型；-i sft 表示加载“sft 阶段”产出的 checkpoint 来评估
-torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft
+torchrun --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
 
 # 通过命令行和模型进行交互式聊天！
 # 不带 -p 参数时进入交互模式，可以连续多轮对话；带 -p 时是一次性提示词
