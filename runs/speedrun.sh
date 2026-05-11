@@ -97,6 +97,9 @@ echo "============================================================"
 
 # 如果系统中没有安装 uv，就通过官方安装脚本进行安装
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv 默认装到 ~/.local/bin，但当前 shell 的 PATH 可能还没包含它（首次安装时尤其常见）
+# 这里显式把 ~/.local/bin 加进 PATH，避免后续 uv 命令找不到
+export PATH="$HOME/.local/bin:$PATH"
 # 如果当前目录下还没有 .venv，就用 uv 创建一个本地 Python 虚拟环境
 [ -d ".venv" ] || uv venv
 # 根据 pyproject.toml/uv.lock 安装项目依赖
