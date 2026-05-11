@@ -11,13 +11,13 @@
 # Defaults are chosen for GPU training:
 #   UV_EXTRA=gpu
 #   CN_MIRROR=1
-#   PYTORCH_MIRROR=0
+#   PYTORCH_MIRROR=tsinghua
 
 set -eu
 
 UV_EXTRA="${UV_EXTRA:-gpu}"
 CN_MIRROR="${CN_MIRROR:-1}"
-PYTORCH_MIRROR="${PYTORCH_MIRROR:-0}"
+PYTORCH_MIRROR="${PYTORCH_MIRROR:-tsinghua}"
 PYPROJECT_BAK=""
 
 cleanup_mirror() {
@@ -67,17 +67,35 @@ if [ "$CN_MIRROR" = "1" ]; then
     export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 fi
 
-if [ "$PYTORCH_MIRROR" = "1" ]; then
-    echo "[PYTORCH_MIRROR] using Aliyun PyTorch mirror"
-    if ! grep -q "mirrors.aliyun.com/pytorch-wheels" pyproject.toml; then
-        PYPROJECT_BAK="pyproject.toml.bak.setup_uv_env.$$"
-        cp pyproject.toml "$PYPROJECT_BAK"
-        sed -i \
-            -e 's|https://download.pytorch.org/whl/cu128|https://mirrors.aliyun.com/pytorch-wheels/cu128|g' \
-            -e 's|https://download.pytorch.org/whl/cpu|https://mirrors.aliyun.com/pytorch-wheels/cpu|g' \
-            pyproject.toml
-    fi
-fi
+case "$PYTORCH_MIRROR" in
+    0|off|none)
+        ;;
+    tsinghua)
+        echo "[PYTORCH_MIRROR] using Tsinghua PyPI mirror for torch"
+        if ! grep -q 'name = "pytorch-cu128"' pyproject.toml || ! grep -q 'https://pypi.tuna.tsinghua.edu.cn/simple' pyproject.toml; then
+            PYPROJECT_BAK="pyproject.toml.bak.setup_uv_env.$$"
+            cp pyproject.toml "$PYPROJECT_BAK"
+            sed -i \
+                -e '0,|https://download.pytorch.org/whl/cu128|s||https://pypi.tuna.tsinghua.edu.cn/simple|' \
+                pyproject.toml
+        fi
+        ;;
+    aliyun)
+        echo "[PYTORCH_MIRROR] using Aliyun PyTorch mirror"
+        if ! grep -q "mirrors.aliyun.com/pytorch-wheels" pyproject.toml; then
+            PYPROJECT_BAK="pyproject.toml.bak.setup_uv_env.$$"
+            cp pyproject.toml "$PYPROJECT_BAK"
+            sed -i \
+                -e 's|https://download.pytorch.org/whl/cu128|https://mirrors.aliyun.com/pytorch-wheels/cu128|g' \
+                -e 's|https://download.pytorch.org/whl/cpu|https://mirrors.aliyun.com/pytorch-wheels/cpu|g' \
+                pyproject.toml
+        fi
+        ;;
+    *)
+        echo "error: unsupported PYTORCH_MIRROR=$PYTORCH_MIRROR (must be tsinghua, aliyun, or off)"
+        exit 1
+        ;;
+esac
 
 [ -d ".venv" ] || uv venv
 uv sync --extra "$UV_EXTRA"
