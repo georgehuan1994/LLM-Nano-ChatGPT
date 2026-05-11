@@ -11,11 +11,13 @@
 # Defaults are chosen for GPU training:
 #   UV_EXTRA=gpu
 #   CN_MIRROR=1
+#   PYTORCH_MIRROR=0
 
 set -eu
 
 UV_EXTRA="${UV_EXTRA:-gpu}"
 CN_MIRROR="${CN_MIRROR:-1}"
+PYTORCH_MIRROR="${PYTORCH_MIRROR:-0}"
 PYPROJECT_BAK=""
 
 cleanup_mirror() {
@@ -55,9 +57,12 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 if [ "$CN_MIRROR" = "1" ]; then
-    echo "[CN_MIRROR] using China mirrors"
+    echo "[CN_MIRROR] using Tsinghua PyPI mirror"
     export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+fi
 
+if [ "$PYTORCH_MIRROR" = "1" ]; then
+    echo "[PYTORCH_MIRROR] using Aliyun PyTorch mirror"
     if ! grep -q "mirrors.aliyun.com/pytorch-wheels" pyproject.toml; then
         PYPROJECT_BAK="pyproject.toml.bak.setup_uv_env.$$"
         cp pyproject.toml "$PYPROJECT_BAK"
