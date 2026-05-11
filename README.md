@@ -31,6 +31,8 @@
 |文件|作用|
 |----|----|
 |[speedrun.sh](runs\speedrun.sh)|完整训练流水线 (8×H100, ~3小时)|
+|[prepare_resources.sh](runs\prepare_resources.sh)|提前下载数据、训练 tokenizer、准备评测资源|
+|[setup_uv_env.sh](runs\setup_uv_env.sh)|创建 uv 虚拟环境并安装依赖|
 |[runcpu.sh](runs\runcpu.sh)|CPU/Mac 教学示例|
 
 ## 4 个训练阶段
@@ -51,11 +53,11 @@
   对齐模型，提升数学/推理
   ```
 
-每一阶段产生的 checkpoint 分别保存在：
+每一阶段产生的 checkpoint 分别保存在 `$NANOCHAT_BASE_DIR` 下：
 
-- `~/.cache/nanochat/base_checkpoints/`
-- `~/.cache/nanochat/chatsft_checkpoints/`
-- `~/.cache/nanochat/chatrl_checkpoints/`
+- `$NANOCHAT_BASE_DIR/base_checkpoints/`
+- `$NANOCHAT_BASE_DIR/chatsft_checkpoints/`
+- `$NANOCHAT_BASE_DIR/chatrl_checkpoints/`
 
 CLI 或 WebUI 默认加载 `sft` 版本。
 
@@ -98,9 +100,13 @@ source .venv/Scripts/activate
 # source .venv/bin/activate
 ```
 
-> 中间产物 (数据、tokenizer、checkpoint) 默认放在 `~/.cache/nanochat/`
+> 中间产物 (数据、tokenizer、checkpoint、报告) 都放在 `$NANOCHAT_BASE_DIR`。
 >
-> 在 Windows 上即 `C:\Users\<YOURNAME>\.cache\nanochat\`。如果想改位置，先 `export NANOCHAT_BASE_DIR=/your/path`。
+> 如果不设置环境变量，Python 代码默认使用 `~/.cache/nanochat/`。本仓库脚本会显式设置自己的默认路径：
+> - `runs/runcpu.sh`：`$PWD/.nanochat`
+> - `runs/prepare_resources.sh` / `runs/speedrun.sh`：`$HOME/autodl-fs/.nanochat`
+>
+> 想统一改位置，运行脚本前设置：`export NANOCHAT_BASE_DIR=/your/path`。
 
 ### CPU 训练路线
 
@@ -120,6 +126,10 @@ bash runs/runcpu.sh
 如果想分步看每个阶段的输出，按下面的顺序手动执行：
 
 ```bash
+# 手动分步执行时，建议和 runcpu.sh 保持一致，把产物放到仓库内 .nanochat
+export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$PWD/.nanochat}"
+mkdir -p "$NANOCHAT_BASE_DIR"
+
 # ① 下载预训练数据 (8 个 shard ≈ 800MB 文本)
 python -m nanochat.dataset -n 8
 
@@ -146,7 +156,7 @@ python -m scripts.base_train \
 python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per-task=16
 
 # ⑤ 下载 SFT 用的身份对话数据 (2.3MB)
-curl -L -o "$HOME/.cache/nanochat/identity_conversations.jsonl" \
+curl -L -o "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" \
     https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # ⑥ SFT 微调 (教模型 <|user_start|>...<|assistant_start|> 对话格式)
@@ -174,7 +184,42 @@ python -m scripts.chat_web
 
 完整流水线见 [runs/speedrun.sh](runs/speedrun.sh)，目标是在 **8×H100** 节点上 **~3 小时**训出一个 GPT-2 (1.6B) 级别的模型，云上成本约 \$48-72。
 
+#### AutoDL A800 冒烟测试
+
+下面这套命令适合在 AutoDL 新机器上从零跑通环境、资源准备和单卡 A800 冒烟测试。冒烟测试不会训练出可用模型，目标是确认依赖、数据、GPU、DDP 启动和整条 pipeline 都能正常跑通。
+
 ```bash
+# 1. 开启 AutoDL 网络加速，并安装 tmux
+source /etc/network_turbo
+apt-get update && apt-get install -y tmux
+
+# 2. 克隆仓库
+git clone https://ghfast.top/https://github.com/georgehuan1994/LLM-Nano-ChatGPT
+cd LLM-Nano-ChatGPT
+
+# 3. 重新创建 Python/uv 环境
+rm -rf .venv
+sh runs/setup_uv_env.sh
+
+# 4. 提前准备数据和评测资源
+# 默认写入 $HOME/autodl-fs/.nanochat，并使用 https://hf-mirror.com 下载 HuggingFace 数据
+sh runs/prepare_resources.sh
+
+# 5. 用 tmux 启动单卡 A800 冒烟测试，避免 SSH 断开导致中断
+CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
+```
+
+常用 tmux 命令：
+
+```bash
+tmux ls
+tmux attach -t smoke
+```
+
+如果 `runs/prepare_resources.sh` 已经下载完数据，后续 `runs/speedrun.sh` 里再次调用 `nanochat.dataset` 时会跳过已存在的 parquet shard，不会重复下载。
+
+```bash
+# speedrun.sh 默认使用 $HOME/autodl-fs/.nanochat，和 prepare_resources.sh 对齐
 # 一键跑完整 pipeline (8×H100，建议放到 screen / tmux 里)
 bash runs/speedrun.sh
 
@@ -185,6 +230,11 @@ WANDB_RUN=d24 bash runs/speedrun.sh
 关键步骤拆解：
 
 ```bash
+# 手动分步执行 GPU 训练时，建议和 speedrun.sh 保持一致
+export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+mkdir -p "$NANOCHAT_BASE_DIR"
+
 # ① 下载更多数据 shard (≈ 170 个，GPT-2 等级训练所需)
 python -m nanochat.dataset -n 170
 
@@ -228,9 +278,15 @@ python -m scripts.chat_web --num-gpus 8
 
 | 阶段 | 路径 | `--source` 参数 |
 |------|------|----------------|
-| 预训练   | `~/.cache/nanochat/base_checkpoints/`    | `base` |
-| SFT 微调 | `~/.cache/nanochat/chatsft_checkpoints/` | `sft` (默认) |
-| RL 对齐  | `~/.cache/nanochat/chatrl_checkpoints/`  | `rl`  |
+| 预训练   | `$NANOCHAT_BASE_DIR/base_checkpoints/`    | `base` |
+| SFT 微调 | `$NANOCHAT_BASE_DIR/chatsft_checkpoints/` | `sft` (默认) |
+| RL 对齐  | `$NANOCHAT_BASE_DIR/chatrl_checkpoints/`  | `rl`  |
+
+另开终端加载模型时，要先设置成训练时同一个缓存目录。例如 AutoDL/speedrun 默认是：
+
+```bash
+export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+```
 
 ```bash
 # 默认加载最大的 SFT 模型

@@ -12,6 +12,13 @@ set -euo pipefail
 # 三种典型启动方式：
 # 运行本脚本前，请先单独准备 Python/uv 环境：
 #    UV_EXTRA=gpu sh runs/setup_uv_env.sh
+# 建议正式训练前先准备公共资源：
+#    sh runs/prepare_resources.sh
+# 该命令会把数据、tokenizer 相关资源放到 $NANOCHAT_BASE_DIR，默认是：
+#    $HOME/autodl-fs/.nanochat
+# speedrun 里仍会调用 nanochat.dataset 做一致性检查；已存在的 parquet shard 会直接跳过，不会重复下载。
+# AutoDL 上默认使用 https://hf-mirror.com 作为 HuggingFace 镜像；如需切回官方站：
+#    HF_ENDPOINT=https://huggingface.co bash runs/speedrun.sh
 #
 # 1) 最简单的方式：直接运行
 #    bash runs/speedrun.sh
@@ -23,15 +30,18 @@ set -euo pipefail
 #    WANDB_RUN=speedrun 这种写法表示给本次脚本注入一个环境变量，作为 wandb 运行名
 #    WANDB_RUN=speedrun tmux new -s speedrun "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
 
-# 设置 NANOCHAT_BASE_DIR 环境变量，指定 nanochat 的数据、tokenizer、checkpoint 等中间产物的存储位置
-# 默认情况下 nanochat 会把数据放到 ~/.cache/nanochat；这里改放到当前项目目录下的 .nanochat 子目录
-# 这样所有产物都集中在仓库目录里，便于统一查看、备份和清理
+# 设置 NANOCHAT_BASE_DIR 环境变量，指定 nanochat 的数据、tokenizer、checkpoint 等中间产物的存储位置。
+# 默认放到 $HOME/autodl-fs/.nanochat，和 runs/prepare_resources.sh 保持一致，便于在 AutoDL 数据盘复用。
+# 如果你想把产物放到当前仓库目录，可以运行前显式设置：
+#    NANOCHAT_BASE_DIR="$PWD/.nanochat" bash runs/speedrun.sh
+# HF_ENDPOINT 用于控制 HuggingFace 下载入口。AutoDL 访问官方站不稳定时，默认走 hf-mirror。
 # OMP_NUM_THREADS=1 限制 OpenMP 只使用 1 个线程，避免在多进程数据加载时
 # 因为线程数过多互相争抢 CPU 反而拖慢速度（PyTorch 多进程训练的常见做法）
 export OMP_NUM_THREADS=1
 
 # export NANOCHAT_BASE_DIR="$PWD/.nanochat"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 mkdir -p $NANOCHAT_BASE_DIR
 
