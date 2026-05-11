@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SMOKE=1 GPU=a800 NGPU=1 screen -L -Logfile runs/speedrun.log -S smoke bash runs/speedrun.sh
-# 之后用 screen -r smoke 重连，Ctrl+A D 分离会话
+# SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
+# 之后用 tmux attach -t smoke 重连，Ctrl+B D 分离会话
 
 # 这个脚本用于训练一个达到 GPT-2 水平的 LLM（包含预训练 + 微调）
 # 它被设计为在一台“干净的” 8 卡 H100 GPU 节点上运行，整个流程大约耗时 3 小时
@@ -10,12 +10,13 @@
 # 三种典型启动方式：
 # 1) 最简单的方式：直接运行
 #    bash runs/speedrun.sh
-# 2) 在 screen 会话中运行（因为整个跑完需要约 3 小时，避免 SSH 断开导致中断）
-#    -L 表示开启日志记录；-Logfile 指定日志文件路径；-S 给会话起一个名字方便重连
-#    screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
+# 2) 在 tmux 会话中运行（因为整个跑完需要约 3 小时，避免 SSH 断开导致中断）
+#    tmux new -s speedrun "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
+#    分离会话：Ctrl+B 然后按 D；重连会话：tmux attach -t speedrun
+#    列出所有会话：tmux ls；杀死会话：tmux kill-session -t speedrun
 # 3) 在带 wandb 日志记录的情况下运行（wandb 配置见下方说明）
 #    WANDB_RUN=speedrun 这种写法表示给本次脚本注入一个环境变量，作为 wandb 运行名
-#    WANDB_RUN=speedrun screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
+#    WANDB_RUN=speedrun tmux new -s speedrun "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
 
 # 设置 NANOCHAT_BASE_DIR 环境变量，指定 nanochat 的数据、tokenizer、checkpoint 等中间产物的存储位置
 # 默认情况下 nanochat 会把数据放到 ~/.cache/nanochat；这里改放到当前项目目录下的 .nanochat 子目录
@@ -100,6 +101,33 @@ command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 # uv 默认装到 ~/.local/bin，但当前 shell 的 PATH 可能还没包含它（首次安装时尤其常见）
 # 这里显式把 ~/.local/bin 加进 PATH，避免后续 uv 命令找不到
 export PATH="$HOME/.local/bin:$PATH"
+
+# -----------------------------------------------------------------------------
+# 国内镜像加速（CN_MIRROR=1）
+# 在 AutoDL/腾讯云/阿里云等国内服务器上，PyPI 和 PyTorch 官方源很慢
+# 启用后会做两件事：
+#   1) PyPI 走清华镜像（通过 UV_DEFAULT_INDEX 环境变量，无侵入）
+#   2) PyTorch 走阿里云镜像（临时改写 pyproject.toml，脚本结束自动还原）
+# 用法：
+#   CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 bash runs/speedrun.sh
+CN_MIRROR=${CN_MIRROR:-0}
+if [ "$CN_MIRROR" = "1" ]; then
+    echo "[CN_MIRROR] 启用国内镜像源"
+    # 1) PyPI → 清华
+    export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+    # 2) PyTorch → 阿里云（临时改 pyproject.toml + 退出钩子还原）
+    if ! grep -q "mirrors.aliyun.com/pytorch-wheels" pyproject.toml; then
+        cp pyproject.toml pyproject.toml.bak
+        sed -i \
+            -e 's|https://download.pytorch.org/whl/cu128|https://mirrors.aliyun.com/pytorch-wheels/cu128|g' \
+            -e 's|https://download.pytorch.org/whl/cpu|https://mirrors.aliyun.com/pytorch-wheels/cpu|g' \
+            pyproject.toml
+        # trap：无论脚本正常结束、报错、还是 Ctrl+C，都把原文件还原
+        # 避免 git 状态被污染，也避免下次跑时镜像 URL 已经在文件里
+        trap 'mv pyproject.toml.bak pyproject.toml 2>/dev/null && echo "[CN_MIRROR] 已还原 pyproject.toml" || true' EXIT
+    fi
+fi
+
 # 如果当前目录下还没有 .venv，就用 uv 创建一个本地 Python 虚拟环境
 [ -d ".venv" ] || uv venv
 # 根据 pyproject.toml/uv.lock 安装项目依赖
