@@ -183,6 +183,10 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", 
 # attention 本身是 Transformer 最核心、也最贵的计算之一。
 # Flash Attention 是更高效的 attention 实现。
 # 如果能用上 FA3，训练速度和显存效率都会更好。
+
+# A800 (sm80) → FA3 不加载 → SDPA 回退 → 自动覆盖为 L
+# 4090 (sm89) → 同上 → 自动覆盖为 L
+# H100/H200 (sm90) + bf16 → FA3 可用 → 保留传入的 --window-pattern（比如 SSSL）
 from nanochat.flash_attention import USE_FA3
 using_fa3 = USE_FA3
 if using_fa3:
@@ -195,8 +199,10 @@ else:
         print0("WARNING: Flash Attention 3 not available, using PyTorch SDPA fallback")
     print0("WARNING: Training will be less efficient without FA3")
     if args.window_pattern != "L":
-        print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
-        print0("WARNING: Recommend using --window-pattern L for full context attention without alternating sliding window patterns.")
+        # SDPA 在带任意 mask 的滑窗下会退化成 O(N^2) 朴素实现，
+        # A800 等非 Hopper 卡上跑 SSSL 这种模式会非常慢，自动改成 L 全注意力。
+        print0(f"NOTE: Overriding --window-pattern from '{args.window_pattern}' to 'L' because SDPA fallback is in use (non-Hopper GPU, e.g. A800).")
+        args.window_pattern = "L"
     print0("!" * 80)
 
 # -----------------------------------------------------------------------------

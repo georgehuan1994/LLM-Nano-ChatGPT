@@ -206,7 +206,7 @@ sh runs/setup_uv_env.sh
 sh runs/prepare_resources.sh
 
 # 5. 用 tmux 启动单卡 A800 冒烟测试，避免 SSH 断开导致中断
-CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee runs/speedrun.log"
+CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/speedrun.log"
 ```
 
 常用 tmux 命令：
