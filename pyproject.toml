@@ -64,6 +64,7 @@ gpu = [
 [tool.uv]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.10'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64' and python_version == '3.10'",
 ]
 concurrent-downloads = 2
 default-groups = []
