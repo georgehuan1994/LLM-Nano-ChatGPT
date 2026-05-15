@@ -85,6 +85,17 @@ class GPTConfig:
     #
     # 最后一层总会被强制设成 L，让最终输出至少有一次完整上下文汇总。
     window_pattern: str = "SSSL"
+    # enable_experimental:
+    #   是否启用本 fork 中实验性的额外结构：
+    #   - smear_gate / smear_lambda
+    #   - backout_lambda
+    #   - value_embeds + 每层奇数索引上的 attn.ve_gate
+    #
+    # True：使用本 fork 默认的“增强版” GPT（你自己训练的 checkpoint 默认走这个分支）。
+    # False：使用上游 nanochat 的 vanilla 架构，用于加载 Karpathy 发布的官方 checkpoint。
+    #
+    # checkpoint_manager.build_model 会根据 state_dict 是否包含 smear_lambda 自动判断。
+    enable_experimental: bool = True
 
 
 def norm(x):
@@ -182,8 +193,13 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = Linear(self.n_embd, self.n_embd, bias=False)
 
         # ve_gate 是一个额外实验设计，用来控制 Value Embedding 注入强度。
+        # 仅在 enable_experimental=True 且当前层启用 value embedding 时才创建。
         self.ve_gate_channels = 12
-        self.ve_gate = Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer) else None
+        self.ve_gate = (
+            Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
+            if (config.enable_experimental and has_ve(layer_idx, config.n_layer))
+            else None
+        )
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         B, T, C = x.size()
@@ -357,21 +373,32 @@ class GPT(nn.Module):
         self.resid_lambdas = nn.Parameter(torch.ones(config.n_layer))   # 这里只占位，真正初始化在 init_weights()
         self.x0_lambdas = nn.Parameter(torch.zeros(config.n_layer))
 
-        # smear:
-        #   把前一个 token 的 embedding 轻微混到当前位置里，
-        #   相当于注入一点廉价的 bigram 风味信息。
-        self.smear_gate = Linear(24, 1, bias=False)
-        self.smear_lambda = nn.Parameter(torch.zeros(1))
+        # 以下三组（smear / backout / value_embeds）是本 fork 的实验性增强。
+        # 通过 enable_experimental=False 可以让模型变成纯 vanilla 架构，
+        # 用于加载上游 nanochat（例如 Karpathy 官方 d34）发布的 checkpoint。
+        if config.enable_experimental:
+            # smear:
+            #   把前一个 token 的 embedding 轻微混到当前位置里，
+            #   相当于注入一点廉价的 bigram 风味信息。
+            self.smear_gate = Linear(24, 1, bias=False)
+            self.smear_lambda = nn.Parameter(torch.zeros(1))
 
-        # backout:
-        #   在最后输出前减去中间层缓存的一部分表示，属于实验性设计。
-        self.backout_lambda = nn.Parameter(0.2 * torch.ones(1))
+            # backout:
+            #   在最后输出前减去中间层缓存的一部分表示，属于实验性设计。
+            self.backout_lambda = nn.Parameter(0.2 * torch.ones(1))
 
-        # Value embeddings:
-        #   额外为部分层准备的 value embedding 表。
-        head_dim = config.n_embd // config.n_head
-        kv_dim = config.n_kv_head * head_dim
-        self.value_embeds = nn.ModuleDict({str(i): nn.Embedding(padded_vocab_size, kv_dim) for i in range(config.n_layer) if has_ve(i, config.n_layer)})
+            # Value embeddings:
+            #   额外为部分层准备的 value embedding 表。
+            head_dim = config.n_embd // config.n_head
+            kv_dim = config.n_kv_head * head_dim
+            self.value_embeds = nn.ModuleDict({str(i): nn.Embedding(padded_vocab_size, kv_dim) for i in range(config.n_layer) if has_ve(i, config.n_layer)})
+        else:
+            # 纯 vanilla：以 None / 空 ModuleDict 占位。
+            # forward 里会按 None 检查跳过对应分支。
+            self.smear_gate = None
+            self.register_parameter("smear_lambda", None)
+            self.register_parameter("backout_lambda", None)
+            self.value_embeds = nn.ModuleDict()
 
         # 预先生成一大段 rotary embedding 缓存。
         # rotary 很省内存，所以这里直接多算一些，减少后续动态扩容复杂度。
@@ -428,19 +455,20 @@ class GPT(nn.Module):
         for i in range(n_layer):
             self.x0_lambdas.data[i] = 0.20 - (0.15 * i / max(n_layer - 1, 1))
 
-        # smear / backout 的小参数也要显式初始化。
-        torch.nn.init.zeros_(self.smear_lambda)
-        torch.nn.init.constant_(self.backout_lambda, 0.2)
-        torch.nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
+        # smear / backout / value embedding 仅在启用实验性结构时初始化。
+        if self.config.enable_experimental:
+            torch.nn.init.zeros_(self.smear_lambda)
+            torch.nn.init.constant_(self.backout_lambda, 0.2)
+            torch.nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
 
-        # value embedding 初始化方式与 value 投影风格保持接近。
-        for ve in self.value_embeds.values():
-            torch.nn.init.uniform_(ve.weight, -s, s)
+            # value embedding 初始化方式与 value 投影风格保持接近。
+            for ve in self.value_embeds.values():
+                torch.nn.init.uniform_(ve.weight, -s, s)
 
-        # gate 初始给一点小正值，让它一开始略高于完全中性状态。
-        for block in self.transformer.h:
-            if block.attn.ve_gate is not None:
-                torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
+            # gate 初始给一点小正值，让它一开始略高于完全中性状态。
+            for block in self.transformer.h:
+                if block.attn.ve_gate is not None:
+                    torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
 
         # rotary cache 也在这里重建为真实张量。
         head_dim = self.config.n_embd // self.config.n_head
@@ -451,8 +479,9 @@ class GPT(nn.Module):
         # 但 fp16 是特例，因为 GradScaler 处理上需要更谨慎。
         if COMPUTE_DTYPE != torch.float16:
             self.transformer.wte.to(dtype=COMPUTE_DTYPE)
-            for ve in self.value_embeds.values():
-                ve.to(dtype=COMPUTE_DTYPE)
+            if self.config.enable_experimental:
+                for ve in self.value_embeds.values():
+                    ve.to(dtype=COMPUTE_DTYPE)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=100000, device=None):
         """
@@ -526,8 +555,9 @@ class GPT(nn.Module):
         # 把不属于大矩阵乘法主干的参数排除出去，便于估算主成本。
         value_embeds_numel = sum(ve.weight.numel() for ve in self.value_embeds.values())
         nparams_exclude = (self.transformer.wte.weight.numel() + value_embeds_numel +
-                          self.resid_lambdas.numel() + self.x0_lambdas.numel() +
-                          self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel())
+                          self.resid_lambdas.numel() + self.x0_lambdas.numel())
+        if self.config.enable_experimental:
+            nparams_exclude += (self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel())
         h, q, t = self.config.n_head, self.config.n_embd // self.config.n_head, self.config.sequence_len
         # attention 部分的 FLOPs 要额外考虑每层窗口大小。
         attn_flops = 0
@@ -558,7 +588,9 @@ class GPT(nn.Module):
         value_embeds = sum(p.numel() for p in self.value_embeds.parameters())
         lm_head = sum(p.numel() for p in self.lm_head.parameters())
         transformer_matrices = sum(p.numel() for p in self.transformer.h.parameters())
-        scalars = self.resid_lambdas.numel() + self.x0_lambdas.numel() + self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel()
+        scalars = self.resid_lambdas.numel() + self.x0_lambdas.numel()
+        if self.config.enable_experimental:
+            scalars += self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel()
         total = wte + value_embeds + lm_head + transformer_matrices + scalars
         assert total == sum(p.numel() for p in self.parameters()), "Parameter count mismatch"
         return {
@@ -591,23 +623,34 @@ class GPT(nn.Module):
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        smear_params = [self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params) + len(smear_params)
+        smear_params = (
+            [self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
+            if self.config.enable_experimental else []
+        )
+        expected = (len(matrix_params) + len(embedding_params) + len(lm_head_params)
+                    + len(value_embeds_params) + len(resid_params) + len(x0_params) + len(smear_params))
+        assert len(list(self.parameters())) == expected
 
         # 对 AdamW 参数组再做一个按 d_model 缩放的学习率修正。
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
 
         # 构造 AdamW 参数组。
+        # 顺序与历史保持一致（lm_head → embedding → value_embeds → resid → x0 → smear），
+        # 这样老 checkpoint 保存的 optimizer state 仍可对位加载。
         param_groups = [
             # embeddings / lm_head / scalars 都走 AdamW，但超参数可各不相同
             dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
             dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
+        ]
+        if value_embeds_params:
+            param_groups.append(dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01))
+        param_groups += [
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.05),
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind='adamw', params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
         ]
+        if smear_params:
+            param_groups.append(dict(kind='adamw', params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0))
 
         # 大矩阵参数按 shape 分组走 Muon。
         # 这样做有助于 Muon 内部更高效地批处理同形状矩阵。
@@ -669,23 +712,25 @@ class GPT(nn.Module):
         # smear：
         # 把前一个 token 的 embedding 轻微混进当前位置，
         # 相当于给模型额外补一点“相邻 token 局部搭配”的廉价先验。
-        if kv_cache is None:
-            # 训练时整段序列都在，所以可以直接用切片处理位置 1..T-1。
-            assert T > 1, "Training forward pass should have T > 1"
-            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
-            x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
-        else:
-            # 推理时可能是一个 token 一个 token 地往后生成，所以要借助缓存拿到上一个位置的 embedding。
-            x_pre_smear = kv_cache.prev_embedding
-            kv_cache.prev_embedding = x[:, -1:, :]
-            if T > 1:
-                # prefill：一次喂很多 token，处理方式和训练基本一致
+        # 仅当 enable_experimental=True 时启用。
+        if self.smear_lambda is not None:
+            if kv_cache is None:
+                # 训练时整段序列都在，所以可以直接用切片处理位置 1..T-1。
+                assert T > 1, "Training forward pass should have T > 1"
                 gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
                 x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
-            elif x_pre_smear is not None:
-                # decode：一次只来一个 token，就从缓存读前一个 embedding
-                gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, :, :24]))
-                x = x + gate * x_pre_smear
+            else:
+                # 推理时可能是一个 token 一个 token 地往后生成，所以要借助缓存拿到上一个位置的 embedding。
+                x_pre_smear = kv_cache.prev_embedding
+                kv_cache.prev_embedding = x[:, -1:, :]
+                if T > 1:
+                    # prefill：一次喂很多 token，处理方式和训练基本一致
+                    gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
+                    x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
+                elif x_pre_smear is not None:
+                    # decode：一次只来一个 token，就从缓存读前一个 embedding
+                    gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, :, :24]))
+                    x = x + gate * x_pre_smear
 
         # 开始穿过 Transformer 主干。
         #
@@ -703,13 +748,13 @@ class GPT(nn.Module):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx).to(x.dtype) if str(i) in self.value_embeds else None
             x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
-            if i == backout_layer:
+            if self.backout_lambda is not None and i == backout_layer:
                 x_backout = x
 
         # backout：
         # 在最终投影到 logits 前，减去一部分中间层表示。
         # 这是实验性结构，可以把它粗略理解成一种“移除部分低层特征残留”的尝试。
-        if x_backout is not None:
+        if self.backout_lambda is not None and x_backout is not None:
             x = x - self.backout_lambda.to(x.dtype) * x_backout
         x = norm(x)
 

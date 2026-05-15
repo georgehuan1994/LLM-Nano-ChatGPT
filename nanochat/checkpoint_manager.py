@@ -20,12 +20,21 @@ def log0(message):
     if int(os.environ.get('RANK', 0)) == 0:
         logger.info(message)
 
-def _patch_missing_config_keys(model_config_kwargs):
+def _patch_missing_config_keys(model_config_kwargs, model_data=None):
     """Add default values for new config keys missing in old checkpoints."""
     # Old models were trained with full context (no sliding window)
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
         log0(f"Patching missing window_pattern in model config to 'L'")
+    # Auto-detect upstream / vanilla nanochat checkpoints (e.g. Karpathy's published
+    # karpathy/nanochat-d34) which lack this fork's experimental modules. We use the
+    # presence of `smear_lambda` in the state dict as the signal — if it's missing,
+    # the checkpoint was trained without smear / backout / value_embeds, so we build
+    # the model with those modules disabled to keep load_state_dict(strict=True) happy.
+    if "enable_experimental" not in model_config_kwargs and model_data is not None:
+        if "smear_lambda" not in model_data:
+            model_config_kwargs["enable_experimental"] = False
+            log0("Detected vanilla checkpoint (no smear_lambda); disabling enable_experimental")
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
@@ -93,7 +102,7 @@ def build_model(checkpoint_dir, step, device, phase):
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     model_config_kwargs = meta_data["model_config"]
-    _patch_missing_config_keys(model_config_kwargs)
+    _patch_missing_config_keys(model_config_kwargs, model_data)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)
