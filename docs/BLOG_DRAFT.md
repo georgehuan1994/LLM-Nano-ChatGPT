@@ -1283,3 +1283,633 @@ attention 和 MLP 是分工合作，不是互相替代。
 **手搓一个 GPT，本质上不是 "搭一个神经网络" 这么简单，而是先决定文本该怎么切成 token，再把 token 变成向量，让注意力机制在上下文里找重点，让 MLP 深加工表示，最后通过 `lm_head` 输出下一个 token 的概率分布，并用交叉熵 loss 不断纠正模型；如果我们还想跨 tokenizer 公平比较训练效果，就要进一步引入 BPB 这种按 byte 归一化的指标。**
 
 真正的 ChatGPT 还包含指令微调、RLHF / DPO、工具调用、安全对齐、推理服务、上下文管理等大量工程系统。
+
+
+User: 我正在学习 llm 训练过程，帮我把 base_train 的过程梳理一下，它的调用栈是怎么样的，越详细越好
+
+GitHub Copilot: Optimized tool selection我先顺着 base_train.py 读入口和关键依赖，再把调用链按“启动、数据、模型、训练循环、验证/保存”串起来。接下来会做只读检索，不改文件。 
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/scripts/base_train.py#1-1), lines 1 to 260
+
+Searched for regex `def main\(|class Trainer|def train|load_tokens|DistributedDataLoader|GPT\(|create_optimizer|evaluate|save|checkpoint|torchrun|ddp|wandb|run_base` (`**/*.py`), 80 results
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/gpt.py#1-1), lines 1 to 220
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/dataloader.py)
+
+已经看到这个仓库里的 base_train.py 本身加了不少中文教学注释，所以我会基于真实代码路径来梳理，而不是泛泛讲 GPT 训练。现在继续读后半段训练循环、优化器和 checkpoint/评估相关函数，把调用栈补完整。 
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/scripts/base_train.py#240-240), lines 240 to 520
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/scripts/base_train.py#520-520), lines 520 to 760
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/scripts/base_train.py#760-760), lines 760 to 1007
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/gpt.py#220-220), lines 220 to 760
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/gpt.py#760-760), lines 760 to 829
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/common.py#1-1), lines 1 to 220
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/nanochat/loss_eval.py)
+
+Read [](file:///e%3A/GitRepo/LLM-Nano-ChatGPT/scripts/base_eval.py#130-130), lines 130 to 230
+
+下面按真实代码路径梳理 base_train.py 的训练过程。这个脚本没有 `main()`，所以你运行：
+
+```bash
+python -m scripts.base_train
+```
+
+或：
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_train
+```
+
+时，Python 会从上到下直接执行整个文件。
+
+**一句话总览**
+
+base_train.py 训练的是 base language model，不是 chat model。它做的事是：读取预训练语料，把文本 tokenizer 成 token id，构造成 `(x, y)`，让 GPT 根据 `x` 预测右移一位的 `y`，用 cross entropy 得到 loss，然后反向传播更新参数。
+
+核心调用链可以先记成：
+
+```text
+scripts.base_train
+  -> compute_init / DDP 初始化
+  -> get_tokenizer / get_token_bytes
+  -> build_model_meta
+      -> GPTConfig
+      -> GPT.__init__
+          -> Block
+              -> CausalSelfAttention
+              -> MLP
+  -> model.init_weights
+  -> model.setup_optimizer
+  -> tokenizing_distributed_data_loader_with_state_bos_bestfit
+  -> while training:
+      -> model(x, y)
+          -> GPT.forward
+              -> embedding
+              -> Transformer blocks
+              -> lm_head
+              -> cross_entropy
+      -> loss.backward
+      -> optimizer.step
+      -> eval / sample / checkpoint / report
+```
+
+**启动阶段**
+
+脚本一开始设置 `PYTORCH_ALLOC_CONF=expandable_segments:True`，这是 CUDA 显存分配优化，目的是减少长训练中的显存碎片。然后导入 PyTorch、wandb，以及项目内部模块。
+
+比较重要的项目内部模块是：
+
+- gpt.py：GPT 模型定义，最核心。
+- dataloader.py：训练/验证数据 loader。
+- common.py：设备、DDP、日志、路径等公共工具。
+- loss_eval.py：BPB 验证指标。
+- base_eval.py：CORE benchmark 评估。
+- checkpoint_manager.py：checkpoint 保存/加载。
+
+然后 argparse 解析训练参数，例如：
+
+```text
+--depth
+--max-seq-len
+--device-batch-size
+--total-batch-size
+--num-iterations
+--target-param-data-ratio
+--eval-every
+--sample-every
+--save-every
+--resume-from-step
+```
+
+这里有个很重要的区别：
+
+```text
+device_batch_size = 单卡一次前向的样本数
+max_seq_len       = 每条样本 token 长度
+total_batch_size  = 一次 optimizer.step 前累计的总 token 数
+```
+
+所以训练不是简单“一批数据更新一次”，而是可能会做 gradient accumulation。
+
+**设备和分布式初始化**
+
+接下来调用 common.py：
+
+```text
+device_type = autodetect_device_type()
+ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
+```
+
+它主要做这些事：
+
+1. 判断用 `cuda` / `mps` / `cpu`。
+2. 设置随机种子。
+3. 如果是 `torchrun` 启动，会从环境变量读取 `RANK`、`LOCAL_RANK`、`WORLD_SIZE`。
+4. CUDA + torchrun 时初始化 NCCL process group。
+5. 返回当前进程应该使用的 device。
+
+多卡时，每个 GPU 对应一个进程。`ddp_rank == 0` 的进程是 master process，负责主要打印、wandb、checkpoint 写盘等。
+
+**Flash Attention 检查**
+
+然后脚本检查 flash_attention.py 里的 FA3 是否可用。
+
+如果可用，训练里的 attention 会走更高效的 Flash Attention 3。  
+如果不可用，会退回 PyTorch SDPA。此时如果用户传了滑窗 attention pattern，比如 `SSSL`，脚本会把它改成 `L`，因为 SDPA fallback 下复杂滑窗可能非常慢。
+
+这一步不会改变语言模型训练目标，只影响 attention 内核和速度。
+
+**Tokenizer 加载**
+
+然后是：
+
+```text
+tokenizer = get_tokenizer()
+token_bytes = get_token_bytes(device=device)
+vocab_size = tokenizer.get_vocab_size()
+```
+
+tokenizer 的作用是把原始文本变成 token id。模型不直接看字符串，只看整数 token。
+
+`token_bytes` 用在 BPB 评估里。因为普通 loss 是“每 token 平均损失”，而 BPB 是“每 byte 平均 bit 数”，所以需要知道每个 token 解码后对应多少字节。
+
+**模型构建**
+
+模型构建从 [build_model_meta](scripts/base_train.py#L227) 开始。
+
+它先根据 `depth` 推导模型宽度：
+
+```text
+base_dim = depth * aspect_ratio
+model_dim = 向上取整到 head_dim 的整数倍
+num_heads = model_dim // head_dim
+```
+
+然后构造：
+
+```text
+GPTConfig(
+  sequence_len=max_seq_len,
+  vocab_size=vocab_size,
+  n_layer=depth,
+  n_head=num_heads,
+  n_kv_head=num_heads,
+  n_embd=model_dim,
+  window_pattern=window_pattern,
+)
+```
+
+接着：
+
+```text
+with torch.device("meta"):
+    model_meta = GPT(config)
+```
+
+`meta device` 的意思是：只创建参数形状，不真正分配显存。这让脚本可以先搭出模型结构，再显式分配和初始化。
+
+随后主流程做：
+
+```text
+model = build_model_meta(args.depth)
+model.to_empty(device=device)
+model.init_weights()
+```
+
+这里的调用栈是：
+
+```text
+base_train.build_model_meta
+  -> GPTConfig
+  -> GPT.__init__
+      -> _compute_window_sizes
+      -> nn.Embedding
+      -> ModuleList([Block(...)])
+          -> Block.__init__
+              -> CausalSelfAttention.__init__
+                  -> Linear c_q / c_k / c_v / c_proj
+              -> MLP.__init__
+                  -> Linear c_fc / c_proj
+      -> lm_head
+      -> resid_lambdas / x0_lambdas
+      -> experimental: smear / backout / value_embeds
+      -> _precompute_rotary_embeddings
+```
+
+GPT 主体在 gpt.py。每层 Transformer block 在 gpt.py。Attention 在 gpt.py。MLP 在 gpt.py。
+
+**模型结构内部**
+
+一次 `model(x, y)` 会进入 GPT.forward。
+
+输入：
+
+```text
+idx:     (B, T) token ids
+targets: (B, T) 下一个 token 的目标
+```
+
+训练数据里的 `x` 和 `y` 是右移关系：
+
+```text
+row:  [bos, token1, token2, token3, ...]
+x:    [bos, token1, token2, ...]
+y:    [token1, token2, token3, ...]
+```
+
+GPT forward 的内部主线：
+
+```text
+idx
+  -> token embedding: transformer.wte(idx)
+  -> norm
+  -> optional smear
+  -> for each Transformer block:
+       -> resid_lambdas[i] * x + x0_lambdas[i] * x0
+       -> optional value embedding
+       -> Block.forward
+            -> x + Attention(norm(x))
+            -> x + MLP(norm(x))
+  -> optional backout
+  -> norm
+  -> lm_head
+  -> logits
+  -> cross_entropy(logits, targets)
+```
+
+Attention 的内部主线：
+
+```text
+x
+  -> c_q(x), c_k(x), c_v(x)
+  -> reshape to multi-head
+  -> optional value embedding injection
+  -> rotary position embedding on q/k
+  -> q/k RMSNorm
+  -> flash_attn_func(q, k, v, causal=True, window_size=...)
+  -> c_proj
+```
+
+MLP 的内部主线：
+
+```text
+x
+  -> c_fc
+  -> relu(x)^2
+  -> c_proj
+```
+
+最后 `lm_head` 输出：
+
+```text
+logits: (B, T, vocab_size)
+```
+
+然后训练时执行：
+
+```text
+F.cross_entropy(
+  logits.view(-1, vocab_size),
+  targets.view(-1),
+)
+```
+
+得到标量 loss。
+
+**断点续训**
+
+checkpoint 目录由：
+
+```text
+base_dir = get_base_dir()
+checkpoint_dir = base_dir / "base_checkpoints" / model_tag
+```
+
+决定。
+
+如果传了 `--resume-from-step`，脚本会调用：
+
+```text
+load_checkpoint(checkpoint_dir, step, device, load_optimizer=True, rank=ddp_rank)
+```
+
+恢复：
+
+```text
+model weights
+optimizer state
+meta_data
+dataloader_state_dict
+loop_state
+```
+
+所以它不只是恢复模型参数，还会恢复优化器动量、dataloader 进度、最小 val bpb、平滑 loss、累计训练时间等。
+
+**优化器构建**
+
+优化器由 GPT.setup_optimizer 创建。
+
+它不是所有参数都用同一个 AdamW，而是分组：
+
+```text
+lm_head            -> AdamW
+token embedding    -> AdamW
+value embeddings   -> AdamW
+resid_lambdas      -> AdamW
+x0_lambdas         -> AdamW
+smear/backout      -> AdamW
+Transformer矩阵参数 -> Muon 或 DistMuonAdamW
+```
+
+多卡时用 `DistMuonAdamW`，单卡时用 `MuonAdamW`。
+
+这一步的调用栈：
+
+```text
+base_train
+  -> model.setup_optimizer(...)
+      -> GPT.setup_optimizer
+          -> get_dist_info
+          -> build param_groups
+          -> MuonAdamW / DistMuonAdamW
+```
+
+**数据加载**
+
+训练 loader 来自 dataloader.py。
+
+调用栈是：
+
+```text
+base_train
+  -> tokenizing_distributed_data_loader_with_state_bos_bestfit
+      -> _document_batches
+          -> get_dist_info
+          -> list_parquet_files
+          -> pyarrow.ParquetFile
+          -> read_row_group
+      -> tokenizer.encode
+      -> best-fit packing
+      -> yield inputs, targets, state_dict
+```
+
+它的关键特点：
+
+1. 从 parquet 文件读取文本。
+2. DDP 下不同 rank 读取不同 row group。
+3. 每篇文档前加 BOS token。
+4. 用 best-fit packing 把不同长度文档塞进固定长度 `T + 1` 的 row。
+5. 生成：
+   ```text
+   inputs  = row[:, :-1]
+   targets = row[:, 1:]
+   ```
+6. 返回 `(x, y, dataloader_state_dict)`。
+
+`dataloader_state_dict` 里有：
+
+```text
+pq_idx
+rg_idx
+epoch
+```
+
+用于断点续训时从相近位置继续。
+
+**训练步数和 batch 计算**
+
+脚本支持三种训练时长来源，优先级是：
+
+```text
+num_iterations > target_flops > target_param_data_ratio
+```
+
+最常见是 `target_param_data_ratio`：
+
+```text
+target_tokens = target_param_data_ratio * scaling_params
+num_iterations = target_tokens // total_batch_size
+```
+
+然后计算梯度累积：
+
+```text
+tokens_per_fwdbwd = device_batch_size * max_seq_len
+world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size
+grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
+```
+
+举个例子：
+
+```text
+device_batch_size = 32
+max_seq_len = 2048
+ddp_world_size = 8
+
+单卡一次前向 token = 32 * 2048 = 65,536
+全局一次前向 token = 65,536 * 8 = 524,288
+
+如果 total_batch_size = 2,097,152
+那么 grad_accum_steps = 4
+```
+
+也就是说，一次 optimizer 更新前，每张卡会前向/反向 4 次，梯度累积起来再更新。
+
+**训练主循环**
+
+核心循环从 base_train.py 开始。
+
+每轮 `step` 的顺序是：
+
+```text
+while True:
+  1. 判断是不是 last_step
+  2. 周期性 eval BPB
+  3. 周期性 eval CORE
+  4. 周期性 sample 文本
+  5. 周期性保存 checkpoint
+  6. 如果 last_step，break
+  7. 训练一个 step:
+       for micro_step in grad_accum_steps:
+           loss = model(x, y)
+           loss.backward()
+           x, y = next(train_loader)
+       调整 lr / momentum / weight_decay
+       optimizer.step()
+       model.zero_grad()
+  8. 打印日志
+  9. wandb log
+  10. step += 1
+```
+
+最核心的数值调用栈是：
+
+```text
+base_train training loop
+  -> loss = model(x, y)
+      -> GPT.forward
+          -> transformer.wte
+          -> norm
+          -> smear optional
+          -> for block in transformer.h:
+               -> Block.forward
+                   -> CausalSelfAttention.forward
+                       -> c_q / c_k / c_v
+                       -> apply_rotary_emb
+                       -> flash_attn.flash_attn_func
+                       -> c_proj
+                   -> MLP.forward
+                       -> c_fc
+                       -> relu square
+                       -> c_proj
+          -> lm_head
+          -> F.cross_entropy
+  -> loss.backward()
+  -> optimizer.step()
+```
+
+这就是标准 next-token prediction 训练的完整路径。
+
+**BPB 验证**
+
+验证 BPB 走 loss_eval.py：
+
+```text
+base_train
+  -> build_val_loader()
+  -> evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+      -> for batch:
+           -> model(x, y, loss_reduction='none')
+           -> 按 token_bytes 汇总 total_nats / total_bytes
+      -> DDP all_reduce
+      -> bpb = total_nats / (ln(2) * total_bytes)
+```
+
+这里 `loss_reduction='none'` 很关键，因为 BPB 不是直接看平均 token loss，而是要按每个 token 对应的字节数重新加权。
+
+**CORE 评估**
+
+CORE 评估走 base_eval.py：
+
+```text
+base_train
+  -> evaluate_core(orig_model, tokenizer, device)
+      -> 下载/读取 eval_bundle
+      -> 读取 core.yaml
+      -> 遍历任务
+          -> evaluate_task(...)
+      -> 返回 core_metric
+```
+
+这里用的是 `orig_model`，不是 `torch.compile(model)` 后的模型。原因是 CORE 输入长度变化较多，compiled model 对变长输入可能频繁重编译，代价很大。
+
+**采样生成**
+
+采样阶段：
+
+```text
+engine = Engine(orig_model, tokenizer)
+tokens = tokenizer(prompt, prepend="<|bos|>")
+sample, _ = engine.generate_batch(...)
+```
+
+它不是训练指标，只是让人类直观看模型当前会续写什么。
+
+生成时仍然会调用模型 forward，只是这次 `targets=None`，所以 GPT.forward 返回 logits，而不是 loss。
+
+**保存 checkpoint**
+
+保存触发条件：
+
+```text
+last_step
+或
+save_every > 0 且 step % save_every == 0
+```
+
+保存内容：
+
+```text
+orig_model.state_dict()
+optimizer.state_dict()
+metadata:
+  step
+  val_bpb
+  model_config
+  user_config
+  device_batch_size
+  max_seq_len
+  total_batch_size
+  dataloader_state_dict
+  loop_state
+```
+
+注意保存的是 `orig_model`，不是 compiled model。这样之后加载不依赖 `torch.compile` 包装。
+
+**学习率和调度**
+
+每个 step 更新前会动态设置：
+
+```text
+lrm = get_lr_multiplier(step)
+muon_momentum = get_muon_momentum(step)
+muon_weight_decay = get_weight_decay(step)
+```
+
+学习率大致分三段：
+
+```text
+warmup:   从小线性升到 1.0
+middle:   保持 1.0
+warmdown: 线性降到 final_lr_frac
+```
+
+Muon momentum：
+
+```text
+前 400 step: 0.85 -> 0.97
+中间:       0.97
+warmdown:   0.97 -> 0.90
+```
+
+weight decay 是余弦衰减到 0。
+
+**收尾**
+
+训练结束后：
+
+```text
+print peak memory
+print total training time
+print min validation bpb
+get_report().log(...)
+wandb_run.finish()
+compute_cleanup()
+```
+
+其中 common.py 会销毁 DDP process group。
+
+**最重要的心智模型**
+
+你可以把 base_train.py 理解成“训练调度器”，它不负责具体神经网络数学细节，而是负责把所有部件接起来：
+
+```text
+配置参数
+  -> 设备/DDP
+  -> tokenizer
+  -> GPT 模型
+  -> optimizer
+  -> dataloader
+  -> scheduler
+  -> 训练循环
+  -> eval/sample/checkpoint/report
+```
+
+真正的模型计算在 gpt.py；真正的数据组织在 dataloader.py；真正的 BPB 评估在 loss_eval.py。学习时建议按这个顺序读：先 base_train.py，再 gpt.py，最后读 dataloader.py 和 optim.py。
