@@ -11,7 +11,7 @@ set -euo pipefail
 #   bash runs/chat_d34_sft_cli.sh
 #
 # 单轮提问：
-#   PROMPT="你好，简单介绍一下你自己。" bash runs/chat_d34_sft_cli.sh
+#   PROMPT="who are you?" bash runs/chat_d34_sft_cli.sh
 #
 # 常用覆盖项：
 #   CUDA_VISIBLE_DEVICES=0 bash runs/chat_d34_sft_cli.sh
@@ -22,8 +22,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+export NANOCHAT_BASE_DIR="$PWD/.nanochat"
+# export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+
+if [[ ! "${OMP_NUM_THREADS:-1}" =~ ^[0-9]+$ ]]; then
+    export OMP_NUM_THREADS=1
+else
+    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+fi
 
 PYTHON="${PYTHON:-python}"
 MODEL_TAG="${MODEL_TAG:-d34}"
@@ -32,7 +40,13 @@ STEP="${STEP:-}"
 PROMPT="${PROMPT:-}"
 TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_K="${TOP_K:-50}"
-DEVICE_TYPE="${DEVICE_TYPE:-}"
+
+DEVICE_TYPE="${DEVICE_TYPE:-cpu}"
+# DEVICE_TYPE="${DEVICE_TYPE:-cuda}"
+
+if [ "$DEVICE_TYPE" = "cpu" ]; then
+    export NANOCHAT_DTYPE="${NANOCHAT_DTYPE:-float32}"
+fi
 
 TOKENIZER_DIR="$NANOCHAT_BASE_DIR/tokenizer"
 SFT_CKPT_DIR="$NANOCHAT_BASE_DIR/chatsft_checkpoints/$MODEL_TAG"

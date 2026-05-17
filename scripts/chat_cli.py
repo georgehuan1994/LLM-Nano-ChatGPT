@@ -5,6 +5,7 @@ Intended to be run single GPU only atm:
 python -m scripts.chat_cli
 """
 import argparse
+import codecs
 import torch
 from nanochat.common import compute_init, autodetect_device_type
 from nanochat.engine import Engine
@@ -19,6 +20,19 @@ parser.add_argument('-t', '--temperature', type=float, default=0.6, help='Temper
 parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k sampling parameter')
 parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type for evaluation: cuda|cpu|mps. empty => autodetect')
 args = parser.parse_args()
+
+def decode_stream_token(tokenizer, token, utf8_decoder):
+    # nanochat 默认 tokenizer 是 byte-level BPE。中文、emoji 等多字节字符
+    # 可能被拆到多个 token 里；如果每个 token 单独 decode，半截 UTF-8
+    # 字节会显示成 replacement char "�"。这里改成按 token bytes 喂给
+    # UTF-8 增量解码器，只有凑齐完整字符后才打印出来。
+    if hasattr(tokenizer, "enc") and hasattr(tokenizer.enc, "decode_single_token_bytes"):
+        try:
+            token_bytes = tokenizer.enc.decode_single_token_bytes(token)
+        except KeyError:
+            return tokenizer.decode([token])
+        return utf8_decoder.decode(token_bytes, final=False)
+    return tokenizer.decode([token])
 
 # Init the model and tokenizer
 
@@ -82,12 +96,20 @@ while True:
         "top_k": args.top_k,
     }
     response_tokens = []
+    # 每轮 assistant 回复都新建一个增量解码器，避免上一轮残留的半截字节
+    # 影响下一轮输出。
+    utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     print("\nAssistant: ", end="", flush=True)
     for token_column, token_masks in engine.generate(conversation_tokens, **generate_kwargs):
         token = token_column[0] # pop the batch dimension (num_samples=1)
         response_tokens.append(token)
-        token_text = tokenizer.decode([token])
+        if token == assistant_end:
+            break
+        token_text = decode_stream_token(tokenizer, token, utf8_decoder)
         print(token_text, end="", flush=True)
+    tail_text = utf8_decoder.decode(b"", final=True)
+    if tail_text:
+        print(tail_text, end="", flush=True)
     print()
     # we have to ensure that the assistant end token is the last token
     # so even if generation ends due to max tokens, we have to append it to the end
