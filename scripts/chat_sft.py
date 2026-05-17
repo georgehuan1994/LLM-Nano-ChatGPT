@@ -43,6 +43,7 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 parser.add_argument("--load-optimizer", type=int, default=1, help="warm-start optimizer from pretrained checkpoint (0=no, 1=yes)")
+parser.add_argument("--compile", type=int, default=1, help="compile model with torch.compile on CUDA (0 disables; useful for driver/Inductor issues)")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 # Batch sizes (default: inherit from pretrained checkpoint)
@@ -119,10 +120,10 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-if device_type == "cuda":
+if device_type == "cuda" and args.compile:
     model = torch.compile(model, dynamic=False)
 else:
-    print0(f"Skipping torch.compile on {device_type}. This avoids torch-inductor compiler requirements on CPU/MPS.")
+    print0(f"Skipping torch.compile on {device_type}.")
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank

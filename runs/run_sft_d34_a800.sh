@@ -36,6 +36,10 @@ WANDB_RUN="${WANDB_RUN:-dummy}"
 # SFT 会重新初始化优化器；只做下游 SFT 时通常不需要 base 阶段的 optim_*.pt。
 # 如果你明确保留了 base optimizer 并想 warm start，可运行前设置 LOAD_OPTIMIZER=1。
 LOAD_OPTIMIZER="${LOAD_OPTIMIZER:-0}"
+# 当前 AutoDL A800 镜像会在 torch.compile 的 Inductor/Triton kernel 启动时报
+# "CUDA driver error: invalid argument"，而且训练 forward 也会触发。默认关闭 compile，
+# 保留 BF16 eager 训练；如果更换镜像/驱动后想试编译加速，可运行前设置 COMPILE=1。
+COMPILE="${COMPILE:-0}"
 EVAL_EVERY="${EVAL_EVERY:-200}"
 EVAL_TOKENS="${EVAL_TOKENS:-20971520}"
 # A800 上训练阶段保留 torch.compile，但默认跳过训练中的 val bpb，
@@ -107,7 +111,7 @@ echo " NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR"
 echo " BASE_CKPT_DIR=$BASE_CKPT_DIR"
 echo " SFT_CKPT_DIR=$SFT_CKPT_DIR"
 echo " DEVICE_BATCH_SIZE=$DEVICE_BATCH_SIZE  LOAD_OPTIMIZER=$LOAD_OPTIMIZER"
-echo " WANDB_RUN=$WANDB_RUN  SKIP_VAL_BPB=$SKIP_VAL_BPB  CHATCORE_EVERY=$CHATCORE_EVERY"
+echo " WANDB_RUN=$WANDB_RUN  COMPILE=$COMPILE  SKIP_VAL_BPB=$SKIP_VAL_BPB  CHATCORE_EVERY=$CHATCORE_EVERY"
 echo "============================================================"
 
 # 正式启动 SFT。--model-tag d34 会让脚本明确加载 base_checkpoints/d34，
@@ -116,6 +120,7 @@ echo "============================================================"
     --model-tag "$MODEL_TAG" \
     --device-batch-size "$DEVICE_BATCH_SIZE" \
     --load-optimizer "$LOAD_OPTIMIZER" \
+    --compile "$COMPILE" \
     --eval-every "$EVAL_EVERY" \
     --eval-tokens "$EVAL_TOKENS" \
     --skip-val-bpb "$SKIP_VAL_BPB" \
