@@ -89,11 +89,14 @@ PyTorch 入门可以配合官方 60 分钟教程  —  [Deep Learning with PyTor
 python --version
 python -m pip --version
 
-# 2. 安装项目依赖到当前全局环境
+# 2. 先安装/升级构建工具，避免 pip 构建隔离时找不到 setuptools
+python -m pip install -U setuptools wheel
+
+# 3. 安装项目依赖到当前全局环境
 python -m pip install -e '.[cpu]'        # 没有 NVIDIA GPU 选 cpu
 python -m pip install -e '.[gpu]'        # 有 CUDA GPU 选 gpu，本项目锁定 PyTorch 2.8.0
 
-# 3. 检查环境
+# 4. 检查环境
 bash runs/check_cloud_env.sh
 ```
 
@@ -195,7 +198,8 @@ git clone https://ghfast.top/https://github.com/georgehuan1994/LLM-Nano-ChatGPT
 cd LLM-Nano-ChatGPT
 
 # 3. 使用 AutoDL 自带全局环境，安装项目依赖
-python -m pip install -e '.[gpu]'
+python -m pip install -U setuptools wheel -i https://pypi.org/simple
+python -m pip install --no-build-isolation -e '.[gpu]'
 bash runs/check_cloud_env.sh
 
 # 4. 提前准备数据和评测资源
@@ -205,6 +209,15 @@ sh runs/prepare_resources.sh
 # 5. 用 tmux 启动单卡 A800 冒烟测试，避免 SSH 断开导致中断
 CN_MIRROR=1 SMOKE=1 GPU=a800 NGPU=1 tmux new -s smoke "bash runs/speedrun.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/speedrun.log"
 ```
+
+如果 AutoDL 默认的阿里云 pip 源报 `No matching distribution found for setuptools>=65.0.0`，说明 pip 在安装构建依赖时没有从当前镜像源拿到 `setuptools`。先执行：
+
+```bash
+python -m pip install -U setuptools wheel -i https://pypi.org/simple
+python -m pip install --no-build-isolation -e '.[gpu]'
+```
+
+`--no-build-isolation` 会复用当前全局环境里已经装好的 `setuptools/wheel`，绕过临时构建环境再次访问坏掉的镜像源。
 
 常用 tmux 命令：
 

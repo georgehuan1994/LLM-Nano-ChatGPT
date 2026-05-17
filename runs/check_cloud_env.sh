@@ -86,12 +86,16 @@ try:
         print(f"  Expected PyTorch 2.8.0, found {torch.__version__}.")
     elif torch.version.cuda is None:
         print("  PyTorch 2.8.0 is installed as a CPU build. This is fine locally, but AutoDL A800 should report CUDA 12.x here.")
+    elif not torch.cuda.is_available():
+        print("  PyTorch is a CUDA build, but CUDA is not available in this container.")
+        print("  Check that the AutoDL instance was started with GPU resources and that nvidia-smi works in the shell.")
 except Exception:
     pass
 
 if missing:
     print("  Missing packages were found. Install into the active cloud environment:")
-    print("    python -m pip install -e '.[gpu]'")
+    print("    python -m pip install -U setuptools wheel -i https://pypi.org/simple")
+    print("    python -m pip install --no-build-isolation -e '.[gpu]'")
 else:
     print("  Required imports are present.")
 PY
