@@ -27,11 +27,13 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 MODEL_TAG="${MODEL_TAG:-d34}"
 NGPU="${NGPU:-1}"
-# d34 在单张 A800 上 SFT 时，默认先用 8。若 OOM，可运行前设 DEVICE_BATCH_SIZE=4 或 2。
-DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-8}"
+# d34 在单张 A800 上关闭 torch.compile 后，eager backward 显存更高。
+# 默认用 4 更稳；若仍 OOM，可运行前设 DEVICE_BATCH_SIZE=2 或 1。
+DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-4}"
 WANDB_RUN="${WANDB_RUN:-dummy}"
 # SFT 会重新初始化优化器；只做下游 SFT 时通常不需要 base 阶段的 optim_*.pt。
 # 如果你明确保留了 base optimizer 并想 warm start，可运行前设置 LOAD_OPTIMIZER=1。
@@ -42,8 +44,8 @@ LOAD_OPTIMIZER="${LOAD_OPTIMIZER:-0}"
 COMPILE="${COMPILE:-0}"
 EVAL_EVERY="${EVAL_EVERY:-200}"
 EVAL_TOKENS="${EVAL_TOKENS:-20971520}"
-# A800 上训练阶段保留 torch.compile，但默认跳过训练中的 val bpb，
-# 避免验证路径触发额外的 Inductor/Triton 编译图。训练结束后的 chat_eval 仍会运行。
+# 默认跳过训练中的 val bpb，减少显存占用并避开验证路径的额外编译/评估开销。
+# 训练结束后的 chat_eval 仍会运行；如需训练中验证，可运行前设置 SKIP_VAL_BPB=0。
 SKIP_VAL_BPB="${SKIP_VAL_BPB:-1}"
 # ChatCORE 完整评估很耗时，默认关闭；训练结束后脚本会另外跑一个小规模 chat_eval。
 CHATCORE_EVERY="${CHATCORE_EVERY:--1}"
