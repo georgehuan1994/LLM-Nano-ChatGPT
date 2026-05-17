@@ -33,6 +33,7 @@
 |[speedrun.sh](runs\speedrun.sh)|完整训练流水线 (8×H100, ~3小时)|
 |[prepare_resources.sh](runs\prepare_resources.sh)|提前下载数据、训练 tokenizer、准备评测资源|
 |[check_cloud_env.sh](runs\check_cloud_env.sh)|检查全局 Python/PyTorch/CUDA 环境|
+|[run_sft_d34_a800_4gpu.sh](runs\run_sft_d34_a800_4gpu.sh)|4×A800 从 d34 base 继续训练 SFT 对话模型|
 |[runcpu.sh](runs\runcpu.sh)|CPU/Mac 教学示例|
 
 ## 4 个训练阶段
@@ -227,6 +228,12 @@ tmux attach -t smoke
 ```
 
 如果 `runs/prepare_resources.sh` 已经下载完数据，后续 `runs/speedrun.sh` 里再次调用 `nanochat.dataset` 时会跳过已存在的 parquet shard，不会重复下载。
+
+如果 d34 base checkpoint 已经训练好，并且你想直接在 4×A800 上接着跑 SFT：
+
+```bash
+tmux new -s sft-d34-4gpu "bash runs/run_sft_d34_a800_4gpu.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/sft_d34_a800_4gpu.log"
+```
 
 ```bash
 # speedrun.sh 默认使用 $HOME/autodl-fs/.nanochat，和 prepare_resources.sh 对齐
