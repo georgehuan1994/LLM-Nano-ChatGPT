@@ -132,10 +132,18 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
-    echo "error: torchrun command not found: $TORCHRUN"
-    echo "hint: use a PyTorch cloud image, or set TORCHRUN=/path/to/torchrun"
-    exit 1
+if command -v "$TORCHRUN" >/dev/null 2>&1; then
+    TORCHRUN_CMD=("$TORCHRUN")
+else
+    "$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torch.distributed.run") is None:
+    print("error: neither torchrun nor torch.distributed.run is available")
+    sys.exit(1)
+PY
+    TORCHRUN_CMD=("$PYTHON" -m torch.distributed.run)
 fi
 
 "$PYTHON" - <<'PY'
@@ -216,10 +224,10 @@ wait $DATASET_DOWNLOAD_PID
 # --device-batch-size=16：单卡一次处理 16 条序列
 # --fp8：开启 FP8 低精度训练，H100 原生支持，速度大幅提升、显存占用更少
 # --run=$WANDB_RUN：指定 wandb 运行名；dummy 表示不上传日志
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE --compile=$BASE_COMPILE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
+"${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE --compile=$BASE_COMPILE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 base model：包括 CORE 综合指标、训练/验证集上的 BPB（Bits Per Byte），并采样生成一些文本
 # 同样使用 $NGPU 卡并行评估，加快速度
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
+"${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
 
 # -----------------------------------------------------------------------------
 # SFT 监督微调（Supervised Fine-Tuning）
@@ -234,9 +242,9 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-publ
 
 # 启动 SFT 训练，并在训练后评估
 # device-batch-size=16 是单卡批大小；其他超参在脚本里有合理默认值
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE --compile=$SFT_COMPILE --skip-val-bpb=$SFT_SKIP_VAL_BPB $SFT_TRAIN_EXTRA --run=$WANDB_RUN
+"${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE --compile=$SFT_COMPILE --skip-val-bpb=$SFT_SKIP_VAL_BPB $SFT_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 SFT 后的对话模型；-i sft 表示加载“sft 阶段”产出的 checkpoint 来评估
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
+"${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
 
 # 通过命令行和模型进行交互式聊天！
 # 不带 -p 参数时进入交互模式，可以连续多轮对话；带 -p 时是一次性提示词

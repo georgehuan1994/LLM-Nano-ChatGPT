@@ -17,10 +17,18 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
-    echo "error: torchrun command not found: $TORCHRUN"
-    echo "hint: use the global PyTorch 2.8.0 environment, or set TORCHRUN=/path/to/torchrun"
-    exit 1
+if command -v "$TORCHRUN" >/dev/null 2>&1; then
+    TORCHRUN_CMD=("$TORCHRUN")
+else
+    "$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torch.distributed.run") is None:
+    print("error: neither torchrun nor torch.distributed.run is available")
+    sys.exit(1)
+PY
+    TORCHRUN_CMD=("$PYTHON" -m torch.distributed.run)
 fi
 
 # Setup (skip with SKIP_SETUP=1)
@@ -72,7 +80,7 @@ for d in "${DEPTHS[@]}"; do
         DEVICE_BATCH_SIZE_ARG="--device-batch-size=32"
     fi
 
-    "$TORCHRUN" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
+    "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$d \
         --run="${WANDB_RUN}_d${d}" \
         --model-tag="${TAG}" \

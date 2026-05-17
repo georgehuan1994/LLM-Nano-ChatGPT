@@ -57,10 +57,18 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
-    echo "error: torchrun command not found: $TORCHRUN"
-    echo "hint: use a PyTorch cloud image, or set TORCHRUN=/path/to/torchrun"
-    exit 1
+if command -v "$TORCHRUN" >/dev/null 2>&1; then
+    TORCHRUN_CMD=("$TORCHRUN")
+else
+    "$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torch.distributed.run") is None:
+    print("error: neither torchrun nor torch.distributed.run is available")
+    sys.exit(1)
+PY
+    TORCHRUN_CMD=("$PYTHON" -m torch.distributed.run)
 fi
 
 "$PYTHON" - <<'PY'
@@ -96,7 +104,7 @@ echo " TARGET_PARAM_DATA_RATIO=$TARGET_PARAM_DATA_RATIO  BASE_COMPILE=$BASE_COMP
 echo " WANDB_RUN=$WANDB_RUN"
 echo "============================================================"
 
-"$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.base_train -- \
+"${TORCHRUN_CMD[@]}" --standalone --nproc_per_node="$NGPU" -m scripts.base_train -- \
     --depth="$DEPTH" \
     --model-tag="$MODEL_TAG" \
     --target-param-data-ratio="$TARGET_PARAM_DATA_RATIO" \
@@ -115,7 +123,7 @@ echo "Base checkpoint files:"
 ls -lh "$BASE_CKPT_DIR"
 
 if [ "$RUN_BASE_EVAL" = "1" ]; then
-    "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.base_eval -- \
+    "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node="$NGPU" -m scripts.base_eval -- \
         --model-tag "$MODEL_TAG" \
         --eval "$BASE_EVAL_MODES" \
         --device-batch-size "$BASE_EVAL_BATCH_SIZE"

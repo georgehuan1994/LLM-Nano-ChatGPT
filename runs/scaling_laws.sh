@@ -25,10 +25,18 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
-    echo "error: torchrun command not found: $TORCHRUN"
-    echo "hint: use the global PyTorch 2.8.0 environment, or set TORCHRUN=/path/to/torchrun"
-    exit 1
+if command -v "$TORCHRUN" >/dev/null 2>&1; then
+    TORCHRUN_CMD=("$TORCHRUN")
+else
+    "$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torch.distributed.run") is None:
+    print("error: neither torchrun nor torch.distributed.run is available")
+    sys.exit(1)
+PY
+    TORCHRUN_CMD=("$PYTHON" -m torch.distributed.run)
 fi
 
 RESULTS_DIR="$NANOCHAT_BASE_DIR/scaling_laws_results_${LABEL}"
@@ -88,7 +96,7 @@ for flops in "${FLOPS_BUDGETS[@]}"; do
         # Train the model with fixed flops budget
         # The script will auto-calculate num_iterations to hit target_flops
         # CORE eval happens once at the end (999999 ensures only final step)
-        "$TORCHRUN" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
+        "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
             --depth=$d \
             --target-flops=$flops \
             --target-param-data-ratio=-1 \

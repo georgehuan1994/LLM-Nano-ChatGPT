@@ -79,10 +79,20 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ "$NGPU" != "1" ] && ! command -v "$TORCHRUN" >/dev/null 2>&1; then
-    echo "error: torchrun command not found: $TORCHRUN"
-    echo "hint: use a PyTorch cloud image, or set TORCHRUN=/path/to/torchrun"
-    exit 1
+if [ "$NGPU" != "1" ]; then
+    if command -v "$TORCHRUN" >/dev/null 2>&1; then
+        TORCHRUN_CMD=("$TORCHRUN")
+    else
+        "$PYTHON" - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torch.distributed.run") is None:
+    print("error: neither torchrun nor torch.distributed.run is available")
+    sys.exit(1)
+PY
+        TORCHRUN_CMD=("$PYTHON" -m torch.distributed.run)
+    fi
 fi
 
 TOKENIZER_DIR="$NANOCHAT_BASE_DIR/tokenizer"
@@ -140,7 +150,7 @@ SFT_ARGS=(
 if [ "$NGPU" = "1" ]; then
     "$PYTHON" -m scripts.chat_sft "${SFT_ARGS[@]}" $SFT_EXTRA_ARGS
 else
-    "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_sft -- "${SFT_ARGS[@]}" $SFT_EXTRA_ARGS
+    "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node="$NGPU" -m scripts.chat_sft -- "${SFT_ARGS[@]}" $SFT_EXTRA_ARGS
 fi
 
 echo ""
@@ -157,7 +167,7 @@ if [ "$RUN_CHAT_EVAL" = "1" ]; then
             -b "$CHAT_EVAL_BATCH_SIZE" \
             -x "$CHAT_EVAL_MAX_PROBLEMS"
     else
-        "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_eval -- \
+        "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node="$NGPU" -m scripts.chat_eval -- \
             -i sft \
             -g "$MODEL_TAG" \
             -b "$CHAT_EVAL_BATCH_SIZE" \

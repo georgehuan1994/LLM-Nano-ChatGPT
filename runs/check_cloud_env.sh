@@ -19,7 +19,6 @@ fi
 "$PYTHON" - <<'PY'
 import importlib.util
 import platform
-import shutil
 import sys
 
 print("Python executable:", sys.executable)
@@ -40,8 +39,12 @@ except Exception as exc:
     print("  error:          ", repr(exc))
 
 print("\nCommands:")
+import shutil
 for command in ["python", "pip", "torchrun", "nvidia-smi"]:
     print(f"  {command:12s}", shutil.which(command) or "missing")
+
+torchrun_module = importlib.util.find_spec("torch.distributed.run") is not None
+print(f"  {'torchrun module':12s}", "ok" if torchrun_module else "missing")
 
 required = [
     "torch",
@@ -81,6 +84,8 @@ try:
     import torch
     if not torch.__version__.split("+")[0].startswith("2.8.0"):
         print(f"  Expected PyTorch 2.8.0, found {torch.__version__}.")
+    elif torch.version.cuda is None:
+        print("  PyTorch 2.8.0 is installed as a CPU build. This is fine locally, but AutoDL A800 should report CUDA 12.x here.")
 except Exception:
     pass
 
