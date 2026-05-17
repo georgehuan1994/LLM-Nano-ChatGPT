@@ -16,12 +16,18 @@ EVAL_TOKENS=$((100 * 524288))  # ~100M tokens for final eval (default is ~10M)
 
 export OMP_NUM_THREADS=1
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
-if [ -f ".venv/Scripts/activate" ]; then
-    source .venv/Scripts/activate
-elif [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-else
-    echo "error: no activation script found in .venv"
+PYTHON="${PYTHON:-python}"
+TORCHRUN="${TORCHRUN:-torchrun}"
+
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
+    exit 1
+fi
+
+if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
+    echo "error: torchrun command not found: $TORCHRUN"
+    echo "hint: use the global PyTorch 2.8.0 environment, or set TORCHRUN=/path/to/torchrun"
     exit 1
 fi
 
@@ -82,7 +88,7 @@ for flops in "${FLOPS_BUDGETS[@]}"; do
         # Train the model with fixed flops budget
         # The script will auto-calculate num_iterations to hit target_flops
         # CORE eval happens once at the end (999999 ensures only final step)
-        torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
+        "$TORCHRUN" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
             --depth=$d \
             --target-flops=$flops \
             --target-param-data-ratio=-1 \

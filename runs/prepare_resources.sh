@@ -2,7 +2,7 @@
 
 # Prepare data and reusable resources before GPU training.
 #
-# Usage after the uv environment is ready:
+# Usage after the Python environment is ready:
 #   sh runs/prepare_resources.sh
 #
 # Defaults:
@@ -19,10 +19,11 @@ fi
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 RESOURCE_SHARDS="${RESOURCE_SHARDS:-170}"
-PYTHON=".venv/bin/python"
+PYTHON="${PYTHON:-python}"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "error: $PYTHON is not executable. Run: sh runs/setup_uv_env.sh"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: activate the cloud image environment, or set PYTHON=/path/to/python"
     exit 1
 fi
 

@@ -1,3 +1,28 @@
+Metadata-Version: 2.4
+Name: nanochat
+Version: 0.1.0
+Summary: the minimal full-stack ChatGPT clone
+Requires-Python: <3.13,>=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: datasets>=4.0.0
+Requires-Dist: fastapi>=0.117.1
+Requires-Dist: kernels>=0.11.7
+Requires-Dist: psutil>=7.1.0
+Requires-Dist: rustbpe>=0.1.0
+Requires-Dist: tiktoken>=0.11.0
+Requires-Dist: tokenizers>=0.22.0
+Requires-Dist: torch==2.8.0
+Requires-Dist: uvicorn>=0.36.0
+Requires-Dist: wandb>=0.21.3
+Provides-Extra: cpu
+Requires-Dist: setuptools>=65.0.0; extra == "cpu"
+Requires-Dist: torch==2.8.0; extra == "cpu"
+Provides-Extra: gpu
+Requires-Dist: setuptools>=65.0.0; extra == "gpu"
+Requires-Dist: torch==2.8.0; extra == "gpu"
+Dynamic: license-file
+
 # LLM Nano ChatGPT
 
 这是 Andrej Karpathy (OpenAI 创始成员、特斯拉 AI 前总监) 写的全栈 ChatGPT 极简复刻，目标是把整个 LLM 流程压缩成几千行可读代码。

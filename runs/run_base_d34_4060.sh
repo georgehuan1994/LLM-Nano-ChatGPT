@@ -42,17 +42,13 @@ SPLIT_TOKENS="${SPLIT_TOKENS:-32768}"
 
 PRETRAINED_DIR="${PRETRAINED_DIR:-$NANOCHAT_BASE_DIR/pretrained/nanochat-d34}"
 
-# 激活虚拟环境
-if [ -f ".venv/Scripts/activate" ]; then
-    source .venv/Scripts/activate
-elif [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-else
-    echo "error: no activation script found in .venv"
+PYTHON="${PYTHON:-python}"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
     exit 1
 fi
-PYTHON="python"
-echo "使用 Python: $(command -v python)"
+echo "使用 Python: $(command -v "$PYTHON")"
 
 if [ ! -d "$PRETRAINED_DIR" ]; then
     echo "error: 未找到预训练目录: $PRETRAINED_DIR"
@@ -121,7 +117,7 @@ import sys
 missing = [name for name in ("torch", "nanochat") if importlib.util.find_spec(name) is None]
 if missing:
     print(f"error: missing Python packages: {', '.join(missing)}")
-    print("hint: run: UV_EXTRA=gpu sh runs/setup_uv_env.sh")
+    print("hint: install deps into the global environment: python -m pip install -e '.[gpu]'")
     sys.exit(1)
 PY
 

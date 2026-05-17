@@ -29,21 +29,18 @@ See [dev/LEADERBOARD.md](dev/LEADERBOARD.md) for more docs on how to interpret a
 
 ### Setup
 
-nanochat uses [uv](https://docs.astral.sh/uv/) for dependency management. To install:
+nanochat is configured for a global Python 3.12 environment. To install into the active environment:
 
 ```bash
-uv sync --extra gpu    # Use for CUDA (A100/H100/etc.)
-uv sync --extra cpu    # (or) Use for CPU-only / MPS
-# Windows Git Bash:
-source .venv/Scripts/activate
-# Linux / macOS:
-# source .venv/bin/activate
+python -m pip install -e '.[gpu]'    # Use for CUDA (A100/H100/A800/etc.)
+python -m pip install -e '.[cpu]'    # (or) Use for CPU-only / MPS
+bash runs/check_cloud_env.sh
 ```
 
 For development (adds pytest, matplotlib, ipykernel, transformers, etc.):
 
 ```bash
-uv sync --extra gpu --group dev
+python -m pip install -e '.[gpu]' pytest matplotlib ipykernel transformers python-dotenv
 ```
 
 ### Reproduce and talk to GPT-2
@@ -54,7 +51,7 @@ The most fun you can have is to train your own GPT-2 and talk to it. The entire 
 bash runs/speedrun.sh
 ```
 
-You may wish to do so in a screen session as this will take ~3 hours to run. Once it's done, you can talk to it via the ChatGPT-like web UI. Make sure again that your local uv virtual environment is active (on Windows Git Bash run `source .venv/Scripts/activate`, on Linux/macOS run `source .venv/bin/activate`), and serve it:
+You may wish to do so in a screen session as this will take ~3 hours to run. Once it's done, you can talk to it via the ChatGPT-like web UI. Make sure the same global Python environment is active in your shell, and serve it:
 
 ```bash
 python -m scripts.chat_web
@@ -188,7 +185,7 @@ I've published a number of guides that might contain helpful information, most r
 │   └── spellingbee.py              # Task teaching model to spell/count letters
 ├── tests
 │   └── test_engine.py
-└── uv.lock
+└── pyproject.toml
 ```
 
 ## Contributing

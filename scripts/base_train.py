@@ -83,6 +83,7 @@ parser = argparse.ArgumentParser(description="Pretrain base model")
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # ── Runtime（运行时设备）─────────────────────────────────────────────
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
+parser.add_argument("--compile", type=int, default=1, help="compile model with torch.compile on CUDA (0 disables; useful for driver/Inductor issues)")
 # ── FP8 training（FP8 低精度训练，仅在 H100/Hopper 及以上 GPU 上有意义）──
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
@@ -417,13 +418,13 @@ def disable_fp8(model):
 # “不改模型数学定义，只是尽量把执行变快”。
 
 orig_model = model # 保留未 compile 的原始模型，便于保存、推理和某些变长输入场景
-if device_type == "cuda":
+if device_type == "cuda" and args.compile:
     # torch.compile：把 PyTorch 的 eager 执行图编译成更高效的形式（fuse kernel、减少 Python 开销等）。
     # dynamic=False 告诉 compiler “输入形状是固定的”，可以做更激进的优化。
     # 训练时我们的 (batch, seq_len) 永远固定，所以放心开。
     model = torch.compile(model, dynamic=False)
 else:
-    print0(f"Skipping torch.compile on {device_type}. This avoids torch-inductor compiler requirements on CPU/MPS.")
+    print0(f"Skipping torch.compile on {device_type}.")
 
 # -----------------------------------------------------------------------------
 # 根据 scaling laws / muP 风格经验规则，自动估算更合理的训练预算和超参数

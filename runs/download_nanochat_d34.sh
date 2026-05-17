@@ -33,26 +33,20 @@ REPO_ID="${REPO_ID:-karpathy/nanochat-d34}"
 TARGET_DIR="${TARGET_DIR:-$NANOCHAT_BASE_DIR/base_checkpoints/d34}"
 MAX_WORKERS="${MAX_WORKERS:-4}"
 
-# 激活虚拟环境，让后续 python 命令使用 .venv 里的 Python 和依赖
-# Windows 上的 uv/venv 通常会生成 .venv/Scripts/activate；类 Unix 环境通常是 .venv/bin/activate
-if [ -f ".venv/Scripts/activate" ]; then
-    source .venv/Scripts/activate
-elif [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-else
-    echo "error: no activation script found in .venv"
+PYTHON="${PYTHON:-python}"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
     exit 1
 fi
-
-PYTHON="python"
-echo "使用 Python: $(command -v python)"
+echo "使用 Python: $(command -v "$PYTHON")"
 
 # 确认 huggingface_hub 已安装
 "$PYTHON" - <<'PY'
 import importlib.util, sys
 if importlib.util.find_spec("huggingface_hub") is None:
     print("error: 缺少依赖 huggingface_hub")
-    print("可执行: .venv/bin/pip install -U huggingface_hub")
+    print("可执行: pip install -U huggingface_hub")
     sys.exit(1)
 PY
 

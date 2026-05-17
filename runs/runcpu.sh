@@ -16,33 +16,10 @@ mkdir -p $NANOCHAT_BASE_DIR
 # - tokenizer 文件：通常也会放在这个基础目录下
 # - checkpoint / 中间产物：通常也会放在这个基础目录下
 
-command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 如果是刚安装的 uv，当前 shell 可能还没有加载 ~/.local/bin 到 PATH
-# 这里主动加载一次，确保后续 uv venv / uv sync 在同一个会话里可用
-[ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
-
-# 如果到这里仍然找不到 uv，就直接报错退出，避免后续命令连续失败
-command -v uv &> /dev/null || {
-    echo "error: uv is not available in PATH. Try: source \"$HOME/.local/bin/env\""
-    exit 1
-}
-
-# 如果当前目录下还没有 .venv，就用 uv 创建一个 Python 虚拟环境
-[ -d ".venv" ] || uv venv
-
-# 根据 pyproject.toml/uv.lock 安装项目依赖
-# --extra cpu 表示安装适合 CPU 运行的额外依赖，不安装 CUDA/GPU 专用依赖
-uv sync --extra cpu
-
-# 激活虚拟环境，让后续 python 命令使用 .venv 里的 Python 和依赖
-# Windows 上的 uv/venv 通常会生成 .venv/Scripts/activate；类 Unix 环境通常是 .venv/bin/activate
-if [ -f ".venv/Scripts/activate" ]; then
-    source .venv/Scripts/activate
-elif [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-else
-    echo "error: no activation script found in .venv"
+PYTHON="${PYTHON:-python}"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
     exit 1
 fi
 
@@ -56,16 +33,16 @@ fi
 # -n 8 等价于 --num-files 8，表示下载 8 个训练数据分片 shard
 # shard 可以理解为数据集被切成的很多小文件；这里为了 CPU 演示只下载 8 份，比较快但数据很少
 # 代码里的默认 -n -1 表示下载全部可用训练分片；完整训练会更慢、更占空间
-python -m nanochat.dataset -n 8
+"$PYTHON" -m nanochat.dataset -n 8
 
 # 训练 tokenizer
 # --max-chars=2000000000 表示最多用 20 亿个字符训练分词器；如果数据不够，就用已有数据
 # 字符越多，分词器越稳定，但训练时间也越长
-python -m scripts.tok_train --max-chars=2000000000
+"$PYTHON" -m scripts.tok_train --max-chars=2000000000
 
 # 评估刚训练好的 tokenizer
 # 检查压缩率、编码/解码是否正常等指标，帮助判断分词器是否可用
-python -m scripts.tok_eval
+"$PYTHON" -m scripts.tok_eval
 
 # 训练一个小型 base model（基础语言模型）
 # base model 学的是根据前文预测下一个 token，还不是聊天助手
@@ -84,7 +61,7 @@ python -m scripts.tok_eval
 # --sample-every=100：每训练 100 步让模型生成一些样例文本，方便观察效果
 # --num-iterations=5000：训练 5000 个优化步骤；越大通常效果越好，但耗时更长
 # --run=$WANDB_RUN：指定日志运行名；这里通常是 dummy，不上传真实 wandb 日志
-python -m scripts.base_train \
+"$PYTHON" -m scripts.base_train \
     --depth=6 \
     --head-dim=64 \
     --window-pattern=L \
@@ -102,7 +79,7 @@ python -m scripts.base_train \
 # --device-batch-size=1：评估时单设备 batch 为 1，省内存，适合 CPU 演示
 # --split-tokens=16384：每个数据 split 用 16384 个 token 做 BPB/损失评估；越大越稳定但越慢
 # --max-per-task=16：每个核心评测任务最多评 16 道题；这是为了让 CPU 演示更快
-python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per-task=16
+"$PYTHON" -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per-task=16
 
 # 下载一份用于 “身份/聊天风格” 的 SFT 数据
 # curl -L：如果链接发生跳转，继续跟随跳转下载
@@ -118,7 +95,7 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-publ
 # --eval-tokens=524288：每次评估使用 524288 个 token
 # --num-iterations=1500：SFT 训练 1500 个优化步骤
 # --run=$WANDB_RUN：指定日志运行名；dummy 表示基本不使用 wandb 上传
-python -m scripts.chat_sft \
+"$PYTHON" -m scripts.chat_sft \
     --max-seq-len=512 \
     --device-batch-size=32 \
     --total-batch-size=16384 \

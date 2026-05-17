@@ -1,9 +1,13 @@
+[build-system]
+requires = ["setuptools>=65.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nanochat"
 version = "0.1.0"
 description = "the minimal full-stack ChatGPT clone"
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "datasets>=4.0.0",
     "fastapi>=0.117.1",
@@ -12,7 +16,7 @@ dependencies = [
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "torch==2.9.1",
+    "torch==2.8.0",
     "uvicorn>=0.36.0",
     "wandb>=0.21.3",
 ]
@@ -35,42 +39,18 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
-# target torch to cuda 12.8 or CPU
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
 [project.optional-dependencies]
 cpu = [
     "setuptools>=65.0.0",
-    "torch==2.9.1",
+    "torch==2.8.0",
 ]
 gpu = [
-    "torch==2.9.1",
+    "setuptools>=65.0.0",
+    "torch==2.8.0",
 ]
 
-[tool.uv]
-environments = [
-    "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.10'",
-    "sys_platform == 'win32' and platform_machine == 'AMD64' and python_version == '3.10'",
-]
-concurrent-downloads = 2
-default-groups = []
-conflicts = [
-    [
-        { extra = "cpu" },
-        { extra = "gpu" },
-    ],
-]
+[tool.setuptools]
+packages = ["nanochat"]
+
+[tool.setuptools.package-data]
+nanochat = ["ui.html", "logo.svg"]

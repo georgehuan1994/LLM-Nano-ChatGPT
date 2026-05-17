@@ -181,11 +181,11 @@ Generated: {timestamp}
                 num_chars = int(parts[1])
     num_tokens = num_chars // 4  # assume approximately 4 chars per token
 
-    # count dependencies via uv.lock
-    uv_lock_lines = 0
-    if os.path.exists('uv.lock'):
-        with open('uv.lock', 'r', encoding='utf-8') as f:
-            uv_lock_lines = len(f.readlines())
+    # count declared dependencies from pyproject.toml
+    dependency_lines = 0
+    if os.path.exists('pyproject.toml'):
+        with open('pyproject.toml', 'r', encoding='utf-8') as f:
+            dependency_lines = sum(1 for line in f if ('"' in line and '>=' in line) or '"torch==' in line)
 
     header += f"""
 ### Bloat
@@ -193,7 +193,7 @@ Generated: {timestamp}
 - Lines: {num_lines:,}
 - Files: {num_files:,}
 - Tokens (approx): {num_tokens:,}
-- Dependencies (uv.lock lines): {uv_lock_lines:,}
+- Declared dependency lines: {dependency_lines:,}
 
 """
     return header

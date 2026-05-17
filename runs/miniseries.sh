@@ -8,35 +8,27 @@
 export OMP_NUM_THREADS=1
 export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
 mkdir -p $NANOCHAT_BASE_DIR
+PYTHON="${PYTHON:-python}"
+TORCHRUN="${TORCHRUN:-torchrun}"
+
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
+    exit 1
+fi
+
+if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
+    echo "error: torchrun command not found: $TORCHRUN"
+    echo "hint: use the global PyTorch 2.8.0 environment, or set TORCHRUN=/path/to/torchrun"
+    exit 1
+fi
 
 # Setup (skip with SKIP_SETUP=1)
 if [ -z "$SKIP_SETUP" ]; then
-    # uv
-    command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-    [ -d ".venv" ] || uv venv
-    uv sync --extra gpu
-    if [ -f ".venv/Scripts/activate" ]; then
-        source .venv/Scripts/activate
-    elif [ -f ".venv/bin/activate" ]; then
-        source .venv/bin/activate
-    else
-        echo "error: no activation script found in .venv"
-        exit 1
-    fi
-
     # Tokenizer, download 1000 shards for pretraining
     # (probably this can be reduced but it's tricky to determine the exact right number, TODO).
-    python -m nanochat.dataset -n 1000
-    python -m scripts.tok_train --max-chars=2000000000 --vocab-size=32768
-else
-    if [ -f ".venv/Scripts/activate" ]; then
-        source .venv/Scripts/activate
-    elif [ -f ".venv/bin/activate" ]; then
-        source .venv/bin/activate
-    else
-        echo "error: no activation script found in .venv"
-        exit 1
-    fi
+    "$PYTHON" -m nanochat.dataset -n 1000
+    "$PYTHON" -m scripts.tok_train --max-chars=2000000000 --vocab-size=32768
 fi
 
 # Series name: from arg, env var, or default to today's date (e.g., jan11)
@@ -80,7 +72,7 @@ for d in "${DEPTHS[@]}"; do
         DEVICE_BATCH_SIZE_ARG="--device-batch-size=32"
     fi
 
-    torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
+    "$TORCHRUN" --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$d \
         --run="${WANDB_RUN}_d${d}" \
         --model-tag="${TAG}" \
@@ -100,7 +92,7 @@ for d in "${DEPTHS[@]}"; do
     NUM_SCALING_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP 'scaling: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
     NUM_ITERS=$(grep "Calculated number of iterations" "$LOG_FILE" | tail -1 | sed 's/.*: //' | tr -d ',')
     TOKENS_TRAINED=$((NUM_ITERS * 524288))
-    PARAM_DATA_RATIO=$(python -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
+    PARAM_DATA_RATIO=$("$PYTHON" -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
     MODEL_DIM=$((d * 64))
     VAL_BPB=$(grep "Validation bpb:" "$LOG_FILE" | tail -1 | grep -oP '[\d.]+$')
     CORE_SCORE=$(grep "CORE metric:" "$LOG_FILE" | tail -1 | awk '{print $NF}')

@@ -10,8 +10,8 @@ set -euo pipefail
 # 注意：这是面向 GPU 服务器的“正式速通”脚本；如果你只有 CPU/MacBook，请改用 runcpu.sh
 
 # 三种典型启动方式：
-# 运行本脚本前，请先单独准备 Python/uv 环境：
-#    UV_EXTRA=gpu sh runs/setup_uv_env.sh
+# 运行本脚本前，请先确认当前 shell 里的 python/torchrun 来自云平台镜像或你指定的环境：
+#    python -c "import torch; print(torch.__version__, torch.version.cuda)"
 # 建议正式训练前先准备公共资源：
 #    sh runs/prepare_resources.sh
 # 该命令会把数据、tokenizer 相关资源放到 $NANOCHAT_BASE_DIR，默认是：
@@ -75,6 +75,18 @@ esac
 # 单卡 micro-batch 可以按需调整，OOM 时降到 8/4
 DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-16}
 
+if [ "$GPU" = "a800" ]; then
+    BASE_COMPILE="${BASE_COMPILE:-0}"
+    SFT_COMPILE="${SFT_COMPILE:-0}"
+    SFT_SKIP_VAL_BPB="${SFT_SKIP_VAL_BPB:-1}"
+    export NANOCHAT_COMPILE_OPTIMIZER="${NANOCHAT_COMPILE_OPTIMIZER:-0}"
+else
+    BASE_COMPILE="${BASE_COMPILE:-1}"
+    SFT_COMPILE="${SFT_COMPILE:-1}"
+    SFT_SKIP_VAL_BPB="${SFT_SKIP_VAL_BPB:-0}"
+    export NANOCHAT_COMPILE_OPTIMIZER="${NANOCHAT_COMPILE_OPTIMIZER:-1}"
+fi
+
 # -----------------------------------------------------------------------------
 # 冒烟测试模式（SMOKE=1）
 # 用极小的模型 + 极少的步数跑通整条 pipeline，验证环境/代码无误
@@ -91,12 +103,12 @@ DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-16}
 SMOKE=${SMOKE:-0}
 
 if [ "$SMOKE" = "1" ]; then
-    DEPTH=12
+    DEPTH="${DEPTH:-12}"
     BASE_TRAIN_EXTRA="--num-iterations=200"
     SFT_TRAIN_EXTRA="--num-iterations=50"
     DATASET_SHARDS_BG=8       # 冒烟时不需要额外的后台下载
 else
-    DEPTH=24
+    DEPTH="${DEPTH:-24}"
     BASE_TRAIN_EXTRA=""       # 用 --target-param-data-ratio 自动计算步数
     SFT_TRAIN_EXTRA=""
     DATASET_SHARDS_BG=170
@@ -105,22 +117,24 @@ fi
 echo "============================================================"
 echo " GPU 配置: GPU=$GPU  NGPU=$NGPU  DEVICE_BATCH_SIZE=$DEVICE_BATCH_SIZE  FP8_FLAG=$FP8_FLAG"
 echo " 训练规模: SMOKE=$SMOKE  DEPTH=$DEPTH  DATASET_SHARDS_BG=$DATASET_SHARDS_BG"
+echo " 编译开关: BASE_COMPILE=$BASE_COMPILE  SFT_COMPILE=$SFT_COMPILE  OPT_COMPILE=$NANOCHAT_COMPILE_OPTIMIZER"
 echo "============================================================"
 
 # -----------------------------------------------------------------------------
 # Python 环境检查
-# uv 安装和依赖同步已经被完全拆分到 runs/setup_uv_env.sh。
-# 本脚本只负责训练流程，不再修改 Python 环境。
-PYTHON=".venv/bin/python"
-TORCHRUN=".venv/bin/torchrun"
+# 本脚本只负责训练流程，不再修改 Python 环境；默认直接使用云平台当前 PATH。
+PYTHON="${PYTHON:-python}"
+TORCHRUN="${TORCHRUN:-torchrun}"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "error: $PYTHON is not executable. Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the cloud image's activated environment, or set PYTHON=/path/to/python"
     exit 1
 fi
 
-if [ ! -x "$TORCHRUN" ]; then
-    echo "error: $TORCHRUN is not executable. Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
+if ! command -v "$TORCHRUN" >/dev/null 2>&1; then
+    echo "error: torchrun command not found: $TORCHRUN"
+    echo "hint: use a PyTorch cloud image, or set TORCHRUN=/path/to/torchrun"
     exit 1
 fi
 
@@ -131,7 +145,7 @@ import sys
 missing = [name for name in ("torch", "nanochat") if importlib.util.find_spec(name) is None]
 if missing:
     print(f"error: missing Python packages: {', '.join(missing)}")
-    print("Run: UV_EXTRA=gpu sh runs/setup_uv_env.sh")
+    print("Install project deps in the current cloud environment, e.g. python -m pip install -e '.[gpu]'")
     sys.exit(1)
 PY
 
@@ -202,7 +216,7 @@ wait $DATASET_DOWNLOAD_PID
 # --device-batch-size=16：单卡一次处理 16 条序列
 # --fp8：开启 FP8 低精度训练，H100 原生支持，速度大幅提升、显存占用更少
 # --run=$WANDB_RUN：指定 wandb 运行名；dummy 表示不上传日志
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_train -- --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=$DEVICE_BATCH_SIZE --compile=$BASE_COMPILE $FP8_FLAG $BASE_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 base model：包括 CORE 综合指标、训练/验证集上的 BPB（Bits Per Byte），并采样生成一些文本
 # 同样使用 $NGPU 卡并行评估，加快速度
 "$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.base_eval -- --device-batch-size=$DEVICE_BATCH_SIZE
@@ -220,7 +234,7 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-publ
 
 # 启动 SFT 训练，并在训练后评估
 # device-batch-size=16 是单卡批大小；其他超参在脚本里有合理默认值
-"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE $SFT_TRAIN_EXTRA --run=$WANDB_RUN
+"$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_sft -- --device-batch-size=$DEVICE_BATCH_SIZE --compile=$SFT_COMPILE --skip-val-bpb=$SFT_SKIP_VAL_BPB $SFT_TRAIN_EXTRA --run=$WANDB_RUN
 # 评估 SFT 后的对话模型；-i sft 表示加载“sft 阶段”产出的 checkpoint 来评估
 "$TORCHRUN" --standalone --nproc_per_node=$NGPU -m scripts.chat_eval -- -i sft
 

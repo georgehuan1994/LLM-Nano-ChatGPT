@@ -71,7 +71,7 @@ export OMP_NUM_THREADS=1; \
 export GPU=a800; \
 export NGPU=1; \
 export DEVICE_BATCH_SIZE=8; \
-.venv/bin/torchrun --standalone --nproc_per_node=\$NGPU -m scripts.chat_sft -- \
+torchrun --standalone --nproc_per_node=\$NGPU -m scripts.chat_sft -- \
   --model-tag d12 \
   --model-step 200 \
   --num-iterations 50 \

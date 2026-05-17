@@ -39,20 +39,10 @@ DEVICE_TYPE="${DEVICE_TYPE:-cuda}"
 DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-1}"
 SPLIT_TOKENS="${SPLIT_TOKENS:-32768}"
 
-find_executable() {
-    for candidate in "$@"; do
-        if [ -x "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
-PYTHON="$(find_executable .venv/bin/python .venv/Scripts/python.exe .venv/Scripts/python || true)"
-if [ -z "$PYTHON" ]; then
-    echo "error: Python executable was not found in .venv"
-    echo "hint: run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
+PYTHON="${PYTHON:-python}"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "error: python command not found: $PYTHON"
+    echo "hint: use the global Python 3.12 environment, or set PYTHON=/path/to/python"
     exit 1
 fi
 
@@ -81,7 +71,7 @@ import sys
 missing = [name for name in ("torch", "nanochat") if importlib.util.find_spec(name) is None]
 if missing:
     print(f"error: missing Python packages: {', '.join(missing)}")
-    print("hint: run: UV_EXTRA=gpu sh runs/setup_uv_env.sh")
+    print("hint: install deps into the global environment: python -m pip install -e '.[gpu]'")
     sys.exit(1)
 PY
 
