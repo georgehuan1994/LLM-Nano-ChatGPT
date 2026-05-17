@@ -4,7 +4,7 @@
 # 仓库主页: https://huggingface.co/karpathy/nanochat-d34
 #
 # 用法：
-#   bash runs/download_nanochat_d34.sh                       # 默认下载到 $NANOCHAT_BASE_DIR/pretrained/nanochat-d34
+#   bash runs/download_nanochat_d34.sh                       # 默认下载到 $NANOCHAT_BASE_DIR/base_checkpoints/d34
 #   TARGET_DIR=/data/nanochat-d34 bash runs/download_nanochat_d34.sh
 #   REPO_ID=karpathy/nanochat-d20 bash runs/download_nanochat_d34.sh
 #   HF_ENDPOINT=https://huggingface.co bash runs/download_nanochat_d34.sh   # 切回官方站
@@ -24,13 +24,13 @@ if [ ! -f "pyproject.toml" ]; then
     exit 1
 fi
 
-# export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
-export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$PWD/.nanochat}"
+export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
+# export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$PWD/.nanochat}"
 
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 REPO_ID="${REPO_ID:-karpathy/nanochat-d34}"
-TARGET_DIR="${TARGET_DIR:-$NANOCHAT_BASE_DIR/pretrained/$(basename "$REPO_ID")}"
+TARGET_DIR="${TARGET_DIR:-$NANOCHAT_BASE_DIR/base_checkpoints/d34}"
 MAX_WORKERS="${MAX_WORKERS:-4}"
 
 # 激活虚拟环境，让后续 python 命令使用 .venv 里的 Python 和依赖
