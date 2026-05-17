@@ -28,6 +28,9 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# 优化器内部也有 torch.compile 版 fused AdamW/Muon。当前镜像缺 setuptools，且
+# Inductor/Triton 组合已不稳定；默认关闭优化器编译，使用 eager optimizer。
+export NANOCHAT_COMPILE_OPTIMIZER="${NANOCHAT_COMPILE_OPTIMIZER:-0}"
 
 MODEL_TAG="${MODEL_TAG:-d34}"
 NGPU="${NGPU:-1}"
@@ -107,7 +110,7 @@ echo " NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR"
 echo " BASE_CKPT_DIR=$BASE_CKPT_DIR"
 echo " SFT_CKPT_DIR=$SFT_CKPT_DIR"
 echo " DEVICE_BATCH_SIZE=$DEVICE_BATCH_SIZE  LOAD_OPTIMIZER=$LOAD_OPTIMIZER"
-echo " WANDB_RUN=$WANDB_RUN  COMPILE=$COMPILE  SKIP_VAL_BPB=$SKIP_VAL_BPB  CHATCORE_EVERY=$CHATCORE_EVERY"
+echo " WANDB_RUN=$WANDB_RUN  COMPILE=$COMPILE  OPT_COMPILE=$NANOCHAT_COMPILE_OPTIMIZER  SKIP_VAL_BPB=$SKIP_VAL_BPB  CHATCORE_EVERY=$CHATCORE_EVERY"
 echo "============================================================"
 
 # 正式启动 SFT。--model-tag d34 会让脚本明确加载 base_checkpoints/d34，

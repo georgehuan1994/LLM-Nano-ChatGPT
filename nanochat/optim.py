@@ -7,12 +7,14 @@ Addapted from: https://github.com/KellerJordan/modded-nanogpt
 Further contributions from @karpathy and @chrisjmccormick.
 """
 
+import os
+
 import torch
 import torch.distributed as dist
 from torch import Tensor
 from nanochat.common import COMPUTE_DTYPE
 
-USE_COMPILED_OPTIMIZER = torch.cuda.is_available()
+USE_COMPILED_OPTIMIZER = torch.cuda.is_available() and os.environ.get("NANOCHAT_COMPILE_OPTIMIZER", "1") != "0"
 
 # -----------------------------------------------------------------------------
 """
