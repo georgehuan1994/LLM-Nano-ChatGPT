@@ -61,6 +61,7 @@ parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR a
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=200, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
+parser.add_argument("--skip-val-bpb", type=int, default=0, help="skip validation BPB entirely, including the final validation pass (0=no, 1=yes)")
 parser.add_argument("--chatcore-every", type=int, default=200, help="evaluate ChatCORE metric every N steps (-1 = disable)")
 parser.add_argument("--chatcore-max-cat", type=int, default=-1, help="max problems per categorical task for ChatCORE")
 parser.add_argument("--chatcore-max-sample", type=int, default=24, help="max problems per generative task for ChatCORE")
@@ -356,7 +357,7 @@ while True:
         last_step = bool(last_step_tensor.item())
 
     # once in a while: evaluate the val bpb (all ranks participate)
-    if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
+    if not args.skip_val_bpb and (last_step or (args.eval_every > 0 and step % args.eval_every == 0)):
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
@@ -418,7 +419,7 @@ while True:
             optimizer.state_dict(),
             {
                 "step": step,
-                "val_bpb": val_bpb, # loss at last step
+                "val_bpb": None if min_val_bpb == float("inf") else val_bpb, # loss at last step
                 "model_config": {
                     "sequence_len": args.max_seq_len,
                     "vocab_size": tokenizer.get_vocab_size(),
@@ -511,7 +512,10 @@ while True:
 # print a few more stats
 print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
 print0(f"Total training time: {total_training_time/60:.2f}m")
-print0(f"Minimum validation bpb: {min_val_bpb:.4f}")
+if min_val_bpb == float("inf"):
+    print0("Minimum validation bpb: skipped")
+else:
+    print0(f"Minimum validation bpb: {min_val_bpb:.4f}")
 
 # Log to report
 from nanochat.report import get_report
@@ -522,7 +526,7 @@ get_report().log(section="SFT", data=[
         "DDP world size": ddp_world_size,
     },
     { # stats about training outcomes
-        "Minimum validation bpb": min_val_bpb,
+        "Minimum validation bpb": None if min_val_bpb == float("inf") else min_val_bpb,
     }
 ])
 

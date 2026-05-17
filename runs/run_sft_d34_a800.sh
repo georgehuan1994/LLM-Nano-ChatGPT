@@ -2,18 +2,18 @@
 
 set -euo pipefail
 
-# Continue from an existing d34 base checkpoint and train the chat SFT model on
-# a single A800. This script intentionally skips tokenizer/base pretraining.
+# 从已经训练好的 d34 base checkpoint 继续训练 chat SFT 模型，目标硬件是单张 A800。
+# 这个脚本只负责“后半程”：不会重新训练 tokenizer，也不会重新做 base 预训练。
 #
-# Expected inputs:
+# 运行前必须已经存在这些输入文件：
 #   $NANOCHAT_BASE_DIR/tokenizer/{tokenizer.pkl,token_bytes.pt}
 #   $NANOCHAT_BASE_DIR/base_checkpoints/d34/{model_*.pt,meta_*.json}
 #
-# Output:
+# 训练完成后会输出最终对话模型到：
 #   $NANOCHAT_BASE_DIR/chatsft_checkpoints/d34/model_*.pt
 #   $NANOCHAT_BASE_DIR/chatsft_checkpoints/d34/meta_*.json
 #
-# Recommended cloud launch:
+# 云端推荐用 tmux 启动，避免 SSH 断开导致训练中断：
 #   tmux new -s sft-d34 "bash runs/run_sft_d34_a800.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/sft_d34_a800.log"
 #   tmux attach -t sft-d34
 
@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# AutoDL 等云机器上建议把数据和 checkpoint 放在持久化数据盘 autodl-fs。
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
@@ -29,15 +30,24 @@ export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 
 MODEL_TAG="${MODEL_TAG:-d34}"
 NGPU="${NGPU:-1}"
+# d34 在单张 A800 上 SFT 时，默认先用 8。若 OOM，可运行前设 DEVICE_BATCH_SIZE=4 或 2。
 DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-8}"
 WANDB_RUN="${WANDB_RUN:-dummy}"
+# SFT 会重新初始化优化器；只做下游 SFT 时通常不需要 base 阶段的 optim_*.pt。
+# 如果你明确保留了 base optimizer 并想 warm start，可运行前设置 LOAD_OPTIMIZER=1。
 LOAD_OPTIMIZER="${LOAD_OPTIMIZER:-0}"
 EVAL_EVERY="${EVAL_EVERY:-200}"
 EVAL_TOKENS="${EVAL_TOKENS:-20971520}"
+# A800 上训练阶段保留 torch.compile，但默认跳过训练中的 val bpb，
+# 避免验证路径触发额外的 Inductor/Triton 编译图。训练结束后的 chat_eval 仍会运行。
+SKIP_VAL_BPB="${SKIP_VAL_BPB:-1}"
+# ChatCORE 完整评估很耗时，默认关闭；训练结束后脚本会另外跑一个小规模 chat_eval。
 CHATCORE_EVERY="${CHATCORE_EVERY:--1}"
 CHATCORE_MAX_SAMPLE="${CHATCORE_MAX_SAMPLE:-24}"
 CHATCORE_MAX_CAT="${CHATCORE_MAX_CAT:--1}"
+# 需要临时追加 chat_sft 参数时使用，例如：SFT_EXTRA_ARGS="--num-iterations 500"。
 SFT_EXTRA_ARGS="${SFT_EXTRA_ARGS:-}"
+# RUN_CHAT_EVAL=0 可跳过训练后的评测，只保留 checkpoint 和样例对话。
 RUN_CHAT_EVAL="${RUN_CHAT_EVAL:-1}"
 CHAT_EVAL_MAX_PROBLEMS="${CHAT_EVAL_MAX_PROBLEMS:-200}"
 CHAT_EVAL_BATCH_SIZE="${CHAT_EVAL_BATCH_SIZE:-8}"
@@ -70,12 +80,14 @@ TOKENIZER_DIR="$NANOCHAT_BASE_DIR/tokenizer"
 BASE_CKPT_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/$MODEL_TAG"
 SFT_CKPT_DIR="$NANOCHAT_BASE_DIR/chatsft_checkpoints/$MODEL_TAG"
 
+# tokenizer 必须和 base checkpoint 完全匹配，否则加载时会因为 vocab_size 不一致失败。
 if [ ! -f "$TOKENIZER_DIR/tokenizer.pkl" ] || [ ! -f "$TOKENIZER_DIR/token_bytes.pt" ]; then
     echo "error: missing tokenizer files in $TOKENIZER_DIR"
     echo "hint: copy the tokenizer from the base training run or run the same tokenizer preparation step first"
     exit 1
 fi
 
+# 这里只检查模型权重和 meta。SFT 默认 LOAD_OPTIMIZER=0，所以不要求 base optimizer 存在。
 if ! ls "$BASE_CKPT_DIR"/model_*.pt >/dev/null 2>&1 || ! ls "$BASE_CKPT_DIR"/meta_*.json >/dev/null 2>&1; then
     echo "error: missing d34 base checkpoint in $BASE_CKPT_DIR"
     echo "hint: expected model_*.pt and meta_*.json under base_checkpoints/$MODEL_TAG"
@@ -83,6 +95,7 @@ if ! ls "$BASE_CKPT_DIR"/model_*.pt >/dev/null 2>&1 || ! ls "$BASE_CKPT_DIR"/met
 fi
 
 mkdir -p "$NANOCHAT_BASE_DIR"
+# 身份对话数据很小，用来让 SFT 后的模型稳定回答“你是谁”等身份问题。
 if [ ! -f "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" ]; then
     curl -L -o "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" \
         https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
@@ -94,15 +107,18 @@ echo " NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR"
 echo " BASE_CKPT_DIR=$BASE_CKPT_DIR"
 echo " SFT_CKPT_DIR=$SFT_CKPT_DIR"
 echo " DEVICE_BATCH_SIZE=$DEVICE_BATCH_SIZE  LOAD_OPTIMIZER=$LOAD_OPTIMIZER"
-echo " WANDB_RUN=$WANDB_RUN  CHATCORE_EVERY=$CHATCORE_EVERY"
+echo " WANDB_RUN=$WANDB_RUN  SKIP_VAL_BPB=$SKIP_VAL_BPB  CHATCORE_EVERY=$CHATCORE_EVERY"
 echo "============================================================"
 
+# 正式启动 SFT。--model-tag d34 会让脚本明确加载 base_checkpoints/d34，
+# 并把最终 SFT checkpoint 保存到 chatsft_checkpoints/d34。
 "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_sft -- \
     --model-tag "$MODEL_TAG" \
     --device-batch-size "$DEVICE_BATCH_SIZE" \
     --load-optimizer "$LOAD_OPTIMIZER" \
     --eval-every "$EVAL_EVERY" \
     --eval-tokens "$EVAL_TOKENS" \
+    --skip-val-bpb "$SKIP_VAL_BPB" \
     --chatcore-every "$CHATCORE_EVERY" \
     --chatcore-max-cat "$CHATCORE_MAX_CAT" \
     --chatcore-max-sample "$CHATCORE_MAX_SAMPLE" \
@@ -113,6 +129,8 @@ echo ""
 echo "SFT checkpoint files:"
 ls -lh "$SFT_CKPT_DIR"
 
+# 训练结束后做一个有限题量的评测，确认模型能加载、能跑通 ChatCORE 任务路径。
+# 想节省时间可以 RUN_CHAT_EVAL=0 跳过。
 if [ "$RUN_CHAT_EVAL" = "1" ]; then
     "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_eval -- \
         -i sft \
@@ -121,6 +139,7 @@ if [ "$RUN_CHAT_EVAL" = "1" ]; then
         -x "$CHAT_EVAL_MAX_PROBLEMS"
 fi
 
+# 最后用最终 SFT 模型回答一个提示词，作为最直接的 smoke test。
 "$PYTHON" -m scripts.chat_cli \
     -i sft \
     -g "$MODEL_TAG" \
