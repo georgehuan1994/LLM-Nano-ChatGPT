@@ -24,7 +24,11 @@ cd "$REPO_ROOT"
 # AutoDL 等云机器上建议把数据和 checkpoint 放在持久化数据盘 autodl-fs。
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/autodl-fs/.nanochat}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+if [[ ! "${OMP_NUM_THREADS:-1}" =~ ^[0-9]+$ ]]; then
+    export OMP_NUM_THREADS=1
+else
+    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+fi
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 # 优化器内部也有 torch.compile 版 fused AdamW/Muon。当前镜像缺 setuptools，且

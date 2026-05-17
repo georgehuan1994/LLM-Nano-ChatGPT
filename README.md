@@ -235,6 +235,14 @@ tmux attach -t smoke
 tmux new -s sft-d34-4gpu "bash runs/run_sft_d34_a800_4gpu.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/sft_d34_a800_4gpu.log"
 ```
 
+这个脚本默认 `WANDB_RUN=dummy`，不会弹出 wandb 登录提示。想记录训练曲线时，先运行 `wandb login`，再用：
+
+```bash
+WANDB_RUN=sft-d34-a800-4gpu tmux new -s sft-d34-4gpu "bash runs/run_sft_d34_a800_4gpu.sh 2>&1 | tee $HOME/autodl-fs/.nanochat/sft_d34_a800_4gpu.log"
+```
+
+第一次运行时如果看到 HuggingFace 下载 `smol-smoltalk`、`mmlu`、`gsm8k`，并伴随一些 `404 Not Found`，通常只是 datasets 库在探测是否存在数据脚本或元数据文件；只要后面 parquet 下载完成并出现 `Generating ... split`，就说明数据准备正常。
+
 ```bash
 # speedrun.sh 默认使用 $HOME/autodl-fs/.nanochat，和 prepare_resources.sh 对齐
 # 一键跑完整 pipeline (8×H100，建议放到 screen / tmux 里)

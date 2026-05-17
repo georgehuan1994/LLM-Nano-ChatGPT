@@ -14,6 +14,7 @@ import argparse
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
+import logging
 import wandb
 import torch
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized
@@ -31,6 +32,9 @@ from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.customjson import CustomJSON
 from tasks.spellingbee import SimpleSpelling, SpellingBee
+
+for noisy_logger in ("httpx", "httpcore", "huggingface_hub"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 # -----------------------------------------------------------------------------
 # CLI arguments
