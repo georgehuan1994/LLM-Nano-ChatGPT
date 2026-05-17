@@ -75,12 +75,6 @@ else
 fi
 
 PYTHON="python"
-TORCHRUN="$(command -v torchrun || true)"
-if [ -z "$TORCHRUN" ]; then
-    echo "error: torchrun not found in the active environment"
-    echo "hint: run: UV_EXTRA=gpu sh runs/setup_uv_env.sh"
-    exit 1
-fi
 
 TOKENIZER_DIR="$NANOCHAT_BASE_DIR/tokenizer"
 BASE_CKPT_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/$MODEL_TAG"
@@ -118,7 +112,10 @@ echo "============================================================"
 
 # 正式启动 SFT。--model-tag d34 会让脚本明确加载 base_checkpoints/d34，
 # 并把最终 SFT checkpoint 保存到 chatsft_checkpoints/d34。
-"$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_sft -- \
+# 单卡直接用 python 启动，不用 torchrun。
+# torchrun 即使 nproc_per_node=1 也会初始化 DDP/NCCL；当前优化器里有 CPU tensor
+# 同步路径，NCCL 不支持 CPU all_reduce，会报 "No backend type associated with device type cpu"。
+"$PYTHON" -m scripts.chat_sft \
     --model-tag "$MODEL_TAG" \
     --device-batch-size "$DEVICE_BATCH_SIZE" \
     --load-optimizer "$LOAD_OPTIMIZER" \
@@ -139,7 +136,7 @@ ls -lh "$SFT_CKPT_DIR"
 # 训练结束后做一个有限题量的评测，确认模型能加载、能跑通 ChatCORE 任务路径。
 # 想节省时间可以 RUN_CHAT_EVAL=0 跳过。
 if [ "$RUN_CHAT_EVAL" = "1" ]; then
-    "$TORCHRUN" --standalone --nproc_per_node="$NGPU" -m scripts.chat_eval -- \
+    "$PYTHON" -m scripts.chat_eval \
         -i sft \
         -g "$MODEL_TAG" \
         -b "$CHAT_EVAL_BATCH_SIZE" \
