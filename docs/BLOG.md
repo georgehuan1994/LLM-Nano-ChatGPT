@@ -1719,6 +1719,229 @@ Sample：生成体感有没有变好
 
 有了数据、模型架构，就可以训练出 base model 了。
 
+```
+- depth: 34
+- max_seq_len: 2048
+- target_param_data_ratio: 40
+- device_batch_size: 4
+- total_batch_size: 524,288
+- Number of parameters: 2,217,082,880 (2.2B)
+- Number of FLOPs per token: 1.426509e+10
+- Calculated number of iterations: 169,150
+- Number of training tokens: 88,683,315,200
+- Tokens : Params ratio: 40.0000
+- DDP world size: 4
+- Minimum validation bpb: 0.7045
+- Final validation bpb: 0.7045
+- MFU %: 47.40%
+- Total training flops: 1.265075e+21
+- Peak memory usage: 69811.85MiB
+```
+
+`depth = 34` 表示模型堆了 34 层 Transformer block。每一层都包含一组 Attention 和一组 MLP。层数越多，模型能做的多轮信息加工越多，但参数量和计算量也会一起上升。
+
+`max_seq_len = 2048` 表示每条训练样本最长 2048 个 token。训练时模型一次看到的是一段长度为 2048 的 token 序列，并在每个位置预测下一个 token。它也决定了 causal attention 最大能看多长的上下文。
+
+`target_param_data_ratio = 40` 表示目标训练 token 数大约是参数量的 40 倍。这个数字来自 scaling law 的直觉：模型大小和训练数据量要匹配。模型太大但 token 太少，会学不满；模型太小但数据太多，后面收益会变低。这里我们选择的是：
+
+```text
+目标训练 token 数 = 参数量 × 40
+```
+
+`device_batch_size = 4` 表示每张 GPU 每次前向/反向处理 4 条样本。注意这里的单位是“样本条数”，每条样本长度是 2048 token，所以单张卡一次 micro-batch 处理的 token 数是：
+
+```text
+4 × 2048 = 8192 tokens
+```
+
+`DDP world size = 4` 表示用了 4 张 GPU 做分布式数据并行。所以所有 GPU 合起来，一次 micro-step 处理：
+
+```text
+8192 × 4 = 32,768 tokens
+```
+
+`total_batch_size = 524,288` 表示一次真正的 `optimizer.step()` 前，总共累计 524,288 个 token 的梯度。因为一次 micro-step 只有 32,768 token，所以需要做梯度累积：
+
+```text
+grad_accum_steps = 524,288 / 32,768 = 16
+```
+
+也就是说，每张卡连续做 16 次前向/反向，把梯度攒起来，然后 4 张卡同步，最后才更新一次参数。
+
+`Calculated number of iterations = 169,150` 表示总共更新参数 169,150 次。这个数来自目标 token 数除以 total batch size：
+
+```text
+Number of training tokens = 2,217,082,880 × 40
+           = 88,683,315,200
+
+iterations = 88,683,315,200 / 524,288
+      = 169,150
+```
+
+所以 `Number of training tokens = 88,683,315,200`，也就是大约 886 亿 token。`Tokens : Params ratio = 40.0000` 正是因为：
+
+```text
+88,683,315,200 / 2,217,082,880 = 40
+```
+
+`Number of FLOPs per token = 1.426509e+10` 是估算训练时每处理一个 token 大约需要多少浮点运算。它包括前向、反向、矩阵乘法和 attention 相关计算。总训练计算量就是：
+
+```text
+Total training flops = FLOPs per token × training tokens
+           ≈ 1.426509e10 × 88,683,315,200
+           ≈ 1.265075e21
+```
+
+`MFU = 47.40%` 是 Model FLOPs Utilization，表示实际训练吞吐达到了硬件理论峰值的大约 47.4%。它不是模型质量指标，而是训练系统效率指标。
+
+`Peak memory usage = 69811.85MiB` 表示单卡峰值显存大约 68.2 GiB。这里面不只有模型参数，还包括梯度、优化器状态、激活值、KV/attention 中间张量、通信 buffer 等。
+
+`Minimum validation bpb = 0.7045` 和 `Final validation bpb = 0.7045` 是验证集上的 BPB 指标。BPB 越低，说明模型越能压缩/预测验证文本。这里最小值和最终值一样，表示训练结束时刚好达到这次训练过程中的最好验证 BPB。
+
+### 参数量是怎么算出来的
+
+模型的参数量 `Number of parameters = 2,217,082,880 (2.2B)` 是怎么来的。
+
+这次模型的 tokenizer 词表大小是：
+
+```text
+vocab_size = 32768
+```
+
+nanoChat 会先根据 `depth` 推导隐藏维度。默认宽深比是：
+
+```text
+aspect_ratio = 64
+head_dim     = 128
+```
+
+所以：
+
+```text
+d_model = depth × aspect_ratio
+   = 34 × 64
+   = 2176
+```
+
+2176 刚好可以被 128 整除，因此注意力头数是：
+
+```text
+n_head = d_model / head_dim
+       = 2176 / 128
+       = 17
+```
+
+也就是说，这个模型有 34 层，每层 hidden size 是 2176，每层有 17 个 attention head，每个 head 维度是 128。
+
+先看一个 Transformer block 的参数量。
+
+Attention 里有 4 个主要矩阵：
+
+```text
+Wq:     d_model × d_model
+Wk:     d_model × d_model
+Wv:     d_model × d_model
+Wo:     d_model × d_model
+```
+
+这里没有 bias，所以 Attention 参数量是：
+
+```text
+Attention params per layer
+= 4 × d_model × d_model
+= 4 × 2176 × 2176
+= 18,939,904
+```
+
+MLP 采用的是常见的 `d_model → 4d_model → d_model` 结构，所以有两个矩阵：
+
+```text
+W1: d_model  × 4d_model
+W2: 4d_model × d_model
+```
+
+参数量是：
+
+```text
+MLP params per layer
+= d_model × 4d_model + 4d_model × d_model
+= 8 × d_model × d_model
+= 8 × 2176 × 2176
+= 37,879,808
+```
+
+所以一个 Transformer block 的主干矩阵参数量是：
+
+```text
+Block params
+= Attention params + MLP params
+= 18,939,904 + 37,879,808
+= 56,819,712
+```
+
+34 层合起来：
+
+```text
+Transformer blocks params
+= 56,819,712 × 34
+= 1,931,870,208
+```
+
+然后看词表相关的矩阵。输入端 token embedding 是：
+
+```text
+token embedding params
+= vocab_size × d_model
+= 32768 × 2176
+= 71,303,168
+```
+
+输出端 `lm_head` 也把 `d_model` 映射回词表大小：
+
+```text
+lm_head params
+= d_model × vocab_size
+= 2176 × 32768
+= 71,303,168
+```
+
+这次统计口径里还包含两张同样大小的词表级辅助矩阵。它们可以理解成额外的 embedding / value embedding 类参数，每张大小同样是：
+
+```text
+32768 × 2176 = 71,303,168
+```
+
+因此，词表级矩阵一共是 4 张：
+
+```text
+vocab-related params
+= 4 × 71,303,168
+= 285,212,672
+```
+
+最后总参数量就是：
+
+```text
+Total params
+= Transformer blocks params + vocab-related params
+= 1,931,870,208 + 285,212,672
+= 2,217,082,880
+```
+
+也就是 22.17 亿参数。
+
+我们设定了 `target_param_data_ratio = 40`，所以训练预算直接按参数量线性放大，训练 token 数会是 886 亿左右。
+
+34 层 Transformer blocks 基础模型的 CORE 得分为 0.3382。对比而言，20 层的模型偏速成，GPT-2 大概是 30 层左右。
+
+| 模型 | 参数量 | CORE 得分 |
+| --- | ---: | ---: |
+| d20 | 0.56B | 0.22 |
+| GPT-2 | 1.6B | 0.25 |
+| d32 | 1.88B | 0.3168 |
+| d34 | 2.2B | 0.3382 |
+
+
 我们可以把 base model 跑起来看一眼：
 
 它的交互方式更像 "给一段开头，让模型接着写"：
@@ -1762,6 +1985,150 @@ SFT 阶段，模型看到的是一条条整理好的对话：
 - 轮到助手时，要给出回答；
 - 不要把用户和助手的角色搞混；
 - 不要续写一篇网页，而是完成这轮对话。
+
+### 全参数微调 (Full Fine-Tuning)
+
+全参数微调需要先加载预训练阶段得到的 base checkpoint：
+
+```text
+base model checkpoint
+→ 继续用 SFT 数据训练同一个模型
+→ 保存成 chatsft checkpoint
+```
+
+训练时，模型原来的 Embedding、Attention、MLP、lm_head 等参数都会继续参与更新。也就是说，base model 不是被固定住的；SFT 数据会直接改写整个模型的参数分布，让它从 "会续写文本" 变成 "会按用户请求回答"。
+
+具体的过程是：加载 base model，构建原模型参数的 optimizer，然后用对话数据继续反向传播。脚本还可以从 base 训练的 optimizer checkpoint 里加载动量状态，再把学习率重置成 SFT 阶段的新学习率。
+
+所以全参数的 Chat SFT 可以理解为：
+
+```text
+把整个 base model 接着训练一小段，让它整体适应聊天格式。
+```
+
+这种方法很直接，模型容量也完全打开；代价是训练时要保存全部参数的梯度和优化器状态，显存开销会比较大。
+
+### LoRA：给大矩阵加一个小镜头
+
+**LoRA（Low-Rank Adaptation）** 来自论文 *LoRA: Low-Rank Adaptation of Large Language Models*，作者包括 Edward J. Hu、Yelong Shen、Phillip Wallis、Zeyuan Allen-Zhu、Yuanzhi Li、Shean Wang、Lu Wang、Weizhu Chen。这篇论文的核心问题很朴素：
+
+> 大模型已经很会说话了。微调一个新任务时，我们真的需要改动全部参数吗？
+
+论文的观察是：微调带来的参数改变量，往往有很低的 **Intrinsic rank（内在秩）**。换句话说，模型学新任务时，并不是每个方向都需要大幅移动；真正有用的变化，可能集中在少数几个方向上。
+
+还记得前面讲 Attention 时的 "摄像机" 类比吗？`W_Q`、`W_K`、`W_V` 这些线性层，就像把同一个 token 从不同角度拍成 Query、Key、Value 的摄像机。
+
+全参数微调相当于：
+
+```text
+把整台摄像机重新调一遍
+```
+
+LoRA 的做法更像：
+
+```text
+原摄像机不动
+只在镜头前加一个可训练的小转接环
+让画面沿少数几个关键方向微调
+```
+
+这就是 "Low-Rank Adaptation" 这个名字的意思：低秩，不是低级，而是说这个改变量只允许沿着少数独立方向变化。
+
+我们从一个普通线性层开始看：
+
+```text
+y = W x
+```
+
+这里的维度可以写成：
+
+```text
+x ∈ R^d
+W ∈ R^(k × d)
+y ∈ R^k
+```
+
+`d` 是输入向量的宽度，`k` 是输出向量的宽度。比如在 Attention 里，某个 token 的隐藏状态 `x` 先经过 `W_Q`，变成 Query；这里的 `d` 就是输入 hidden size，`k` 就是 Query 投影后的宽度。
+
+如果 `W` 是 `4096 × 4096`，那么这一台 "摄像机" 就有：
+
+```text
+4096 × 4096 = 16,777,216
+```
+
+约 1677 万个参数。全参数微调等价于直接学习一个同样大的改变量：
+
+```text
+W' = W + ΔW
+```
+
+问题是，`W` 有多大，`ΔW` 就有多大。一个 Transformer 里有很多这样的矩阵：Attention 里的 `W_Q`、`W_K`、`W_V`、`W_O`，MLP 里的上投影和下投影。全部训练时，梯度、optimizer state、checkpoint 都会跟着变大。
+
+LoRA 不直接训练完整的 `ΔW`，而是把它拆成两个小矩阵：
+
+```text
+y = W x + ΔW x
+ΔW = B A
+```
+
+其中：
+
+```text
+A ∈ R^(r × d)
+B ∈ R^(k × r)
+```
+
+这里最关键的是 `r`，也就是 **rank**。
+
+rank 可以理解成 "真正独立的方向数量"。如果一个二维平面里有很多箭头，但它们都只是沿同一条直线伸缩，那么本质上只有 1 个独立方向，rank=1。如果它们能在横向和纵向两个方向上独立变化，rank=2。
+
+放回 LoRA 里，`r=16` 的意思是：这个改变量不是在 `4096` 个方向上自由乱动，而是先把输入压到 16 个可训练的方向里，再从这 16 个方向展开回输出空间。
+
+```text
+x: 4096 维
+↓ A：先压到 16 个方向
+↓ B：再展开回 4096 维
+得到一个小的修正量，加到原来的 Wx 上
+```
+
+所以如果 `d = 4096`、`k = 4096`、`r = 16`，LoRA 只需要训练：
+
+```text
+A: 16 × 4096
+B: 4096 × 16
+总计：16 × 4096 + 4096 × 16 = 131,072
+```
+
+约 13 万参数，而不是 1677 万参数。它不是训练一整台新摄像机，而是训练一个只有 16 个主调节方向的小镜头附件。
+
+那它怎么影响 Attention？
+
+如果 LoRA 加在 `W_Q` 上，它改变的是 token "想问什么"：
+
+```text
+原来：这个 token 用原来的 Q 去找相关信息
+LoRA：在 Q 上加一点偏移，让它更会问当前任务需要的问题
+```
+
+如果 LoRA 加在 `W_K` 上，它改变的是 token "怎样被别人搜到"；加在 `W_V` 上，它改变的是 token "被选中后贡献什么内容"；加在 `W_O` 上，它改变的是多个 head 开完会之后，信息怎样被投影回主干表示。
+
+所以 LoRA 常常优先加在 Attention 的 q/k/v/o projection 上。因为很多 SFT 任务不是让模型重新学习世界知识，而是让它改变信息路由方式：用户问话时该关注哪里，工具调用时该抽取哪些字段，回答时该沿着什么格式组织信息。
+
+LoRA 还有几个常见超参数：
+
+- `rank`：低秩空间的维度，越大容量越强，显存也越高；
+- `alpha`：控制 LoRA 增量的强度，常见形式是 `W' = W + (alpha / r) BA`；
+- `target_modules`：决定把 LoRA 加到哪些线性层上，常见选择是 Attention 里的 q/k/v/o projection。
+
+推理时，LoRA 可以保持为一个外挂小模块，也可以直接 merge 回原权重：
+
+```text
+W' = W + B A
+```
+
+合并之后，模型推理时就不需要再额外挂一个 LoRA 分支，结构几乎和普通模型一样。
+
+不过 nanoChat 这里没有实现 LoRA。它的目标是展示一条最直接的端到端训练链路：预训练出 base model，再把同一个模型继续 SFT 成 chat model。所以这里选择全参数 SFT，而不是参数更省、但工程结构更复杂的 LoRA/adapter 方案。
 
 ### 对话格式：给模型戴上角色名牌
 
